@@ -292,7 +292,7 @@ export default function HomePage() {
             setFps(0);
             setLatencyMs(0);
             clearMessages();
-            setStatus(next === "live" ? "disconnected" : "connected");
+            if (next !== "live") setStatus("connected");
             if (next !== "mock") { setAutoCycle(false); setTurntable(false); }
           }}
         >
@@ -362,7 +362,6 @@ export default function HomePage() {
             onSubmit={(e) => {
               e.preventDefault();
               setWsHost(wsInput);
-              setStatus("reconnecting");
             }}
           >
             <span className="text-xs text-zinc-500 font-mono">ws://</span>
@@ -433,6 +432,7 @@ export default function HomePage() {
               mockMode={!isLive}
               getMockFrame={getMockFrame}
               onFrame={handleFrame}
+              onConnectionChange={isLive ? setStatus : undefined}
               controlledFrame={isSim ? simFrame : null}
             />
           </div>

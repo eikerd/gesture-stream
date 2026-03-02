@@ -33,11 +33,14 @@ function updateSmoothedBBox(sb: BBox | null, kps: PoseFrame["keypoints"]): BBox 
   };
 }
 
+type WsStatus = "connected" | "disconnected" | "reconnecting";
+
 interface SkeletonCanvasProps {
   wsUrl: string;
   mockMode: boolean;
   getMockFrame: () => PoseFrame;
   onFrame: (frame: PoseFrame, fps: number, latencyMs: number) => void;
+  onConnectionChange?: (status: WsStatus) => void;
   /** When provided, skips internal loops and just renders this frame directly. */
   controlledFrame?: PoseFrame | null;
 }
@@ -47,6 +50,7 @@ export function SkeletonCanvas({
   mockMode,
   getMockFrame,
   onFrame,
+  onConnectionChange,
   controlledFrame = null,
 }: SkeletonCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -199,9 +203,14 @@ export function SkeletonCanvas({
     let reconnectTimeout: ReturnType<typeof setTimeout>;
 
     const connect = () => {
+      onConnectionChange?.("reconnecting");
       try {
         ws = new WebSocket(wsUrl);
         wsRef.current = ws;
+
+        ws.onopen = () => {
+          onConnectionChange?.("connected");
+        };
 
         ws.onmessage = (event) => {
           try {
@@ -221,9 +230,11 @@ export function SkeletonCanvas({
 
         ws.onclose = () => {
           wsRef.current = null;
+          onConnectionChange?.("disconnected");
           reconnectTimeout = setTimeout(connect, 3000);
         };
       } catch {
+        onConnectionChange?.("disconnected");
         reconnectTimeout = setTimeout(connect, 3000);
       }
     };
@@ -235,7 +246,7 @@ export function SkeletonCanvas({
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [mockMode, controlledFrame, wsUrl, drawFrame, onFrame, computeFps]);
+  }, [mockMode, controlledFrame, wsUrl, drawFrame, onFrame, computeFps, onConnectionChange]);
 
   return (
     <canvas
