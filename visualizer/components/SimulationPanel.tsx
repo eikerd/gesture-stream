@@ -253,7 +253,7 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
           <SelectTrigger className="h-7 flex-1 text-xs bg-zinc-800 border-zinc-700 text-zinc-100">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-zinc-800 border-zinc-700 text-zinc-100">
+          <SelectContent position="popper" sideOffset={4} className="bg-zinc-800 border-zinc-700 text-zinc-100">
             {SIMULATION_EXERCISES.map((id) => {
               const ex = SEVEN_MINUTE_EXERCISES.find((e) => e.id === id);
               return (

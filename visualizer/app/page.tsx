@@ -18,6 +18,10 @@ import Link from "next/link";
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 type AppMode = "mock" | "simulate" | "live";
 
+const CHAT_WIDTH_MIN = 180;
+const CHAT_WIDTH_MAX = 560;
+const CHAT_WIDTH_DEFAULT = 288;
+
 let _msgCounter = 0;
 function makeId(): string {
   return `msg-${Date.now()}-${++_msgCounter}`;
@@ -40,6 +44,31 @@ export default function HomePage() {
   // Simulate mode: latest frame from SimulationPanel
   const [simFrame, setSimFrame] = useState<PoseFrame | null>(null);
   const simFpsRef = useRef({ frames: 0, lastTime: Date.now(), fps: 0 });
+
+  // Drag-to-resize: right chat panel width
+  const [chatWidth, setChatWidth] = useState(CHAT_WIDTH_DEFAULT);
+  const dragRef = useRef({ active: false, startX: 0, startWidth: CHAT_WIDTH_DEFAULT });
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { active: true, startX: e.clientX, startWidth: chatWidth };
+  }, [chatWidth]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current.active) return;
+      const delta = dragRef.current.startX - e.clientX;
+      const w = Math.max(CHAT_WIDTH_MIN, Math.min(CHAT_WIDTH_MAX, dragRef.current.startWidth + delta));
+      setChatWidth(w);
+    };
+    const onUp = () => { dragRef.current.active = false; };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   const getMockFrame = useCallback(() => generateMockFrame(exercise), [exercise]);
 
@@ -70,10 +99,7 @@ export default function HomePage() {
   const addMessage = useCallback(
     (msg: Omit<ChatMessage, "id" | "ts">) => {
       setMessages((prev) => {
-        const next = [
-          ...prev,
-          { ...msg, id: makeId(), ts: Date.now() },
-        ];
+        const next = [...prev, { ...msg, id: makeId(), ts: Date.now() }];
         return next.length > 200 ? next.slice(next.length - 200) : next;
       });
     },
@@ -86,7 +112,6 @@ export default function HomePage() {
     simRepHistoryRef.current = [];
   }, []);
 
-  // Wire rep events from SimulationPanel → CoachingChat + periodic coach tips
   const handleRepEvent = useCallback(
     (event: RepEvent, ex: ExerciseId) => {
       addMessage({
@@ -102,7 +127,6 @@ export default function HomePage() {
         angle: event.peakAngle,
       });
 
-      // Fetch a coach tip every 5 reps
       if (event.repNumber % 5 === 0) {
         const recentReps = simRepHistoryRef.current.slice(-5);
         void fetch("/api/coach", {
@@ -124,7 +148,7 @@ export default function HomePage() {
     [addMessage]
   );
 
-  // Test: add a sample message every 3 seconds while in mock mode
+  // Mock mode: demo rep messages every 1.5s
   useEffect(() => {
     if (mode !== "mock") return;
     repCounterRef.current = 0;
@@ -138,25 +162,24 @@ export default function HomePage() {
         repNumber: n,
         angle: isGood ? 82 + Math.round(Math.random() * 10) : 55 + Math.round(Math.random() * 8),
       });
-    }, 3000);
+    }, 1500);
     return () => clearInterval(id);
   }, [mode, addMessage]);
 
   const wsUrl = `ws://${wsHost}:8765`;
-
   const isMock = mode === "mock";
   const isLive = mode === "live";
   const isSim = mode === "simulate";
+  const activeExercise = isSim ? simExercise : isMock ? exercise : undefined;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
+    <div className="h-screen bg-zinc-950 text-zinc-100 flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex items-center gap-4 px-6 py-3 border-b border-zinc-800 bg-zinc-900">
+      <header className="flex items-center gap-4 px-6 py-3 border-b border-zinc-800 bg-zinc-900 shrink-0">
         <span className="font-mono font-semibold text-zinc-100 tracking-tight">
           pose.stream
         </span>
 
-        {/* Three-way mode toggle */}
         <Tabs
           value={mode}
           onValueChange={(v) => {
@@ -171,25 +194,23 @@ export default function HomePage() {
           }}
         >
           <TabsList className="h-7 bg-zinc-800">
-            <TabsTrigger value="mock" className="text-xs px-3 h-6">
-              Mock
-            </TabsTrigger>
-            <TabsTrigger value="simulate" className="text-xs px-3 h-6">
-              Simulate
-            </TabsTrigger>
-            <TabsTrigger value="live" className="text-xs px-3 h-6">
-              Live
-            </TabsTrigger>
+            <TabsTrigger value="mock" className="text-xs px-3 h-6">Mock</TabsTrigger>
+            <TabsTrigger value="simulate" className="text-xs px-3 h-6">Simulate</TabsTrigger>
+            <TabsTrigger value="live" className="text-xs px-3 h-6">Live</TabsTrigger>
           </TabsList>
         </Tabs>
 
-        {/* Mock exercise selector */}
+        {/* Mock exercise selector — always opens downward */}
         {isMock && (
           <Select value={exercise} onValueChange={(v) => setExercise(v as ExerciseId)}>
             <SelectTrigger className="h-7 w-48 text-xs bg-zinc-800 border-zinc-700 text-zinc-100">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="bg-zinc-800 border-zinc-700 text-zinc-100">
+            <SelectContent
+              position="popper"
+              sideOffset={4}
+              className="bg-zinc-800 border-zinc-700 text-zinc-100 z-50"
+            >
               {SEVEN_MINUTE_EXERCISES.map((ex) => (
                 <SelectItem key={ex.id} value={ex.id} className="text-xs">
                   {ex.order}. {ex.label}
@@ -199,7 +220,6 @@ export default function HomePage() {
           </Select>
         )}
 
-        {/* Live WS host form */}
         {isLive && (
           <form
             className="flex items-center gap-2 ml-2"
@@ -233,26 +253,13 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Main layout */}
-      <main className="flex flex-1 overflow-hidden">
-        {/* Left: Canvas + SimulationPanel (in simulate mode) */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {/* Canvas area */}
-          <div className="flex-1 p-4 flex items-center justify-center min-h-0">
-            <div className="w-full max-w-2xl aspect-[4/3]">
-              <SkeletonCanvas
-                wsUrl={wsUrl}
-                mockMode={!isLive}
-                getMockFrame={getMockFrame}
-                onFrame={handleFrame}
-                controlledFrame={isSim ? simFrame : null}
-              />
-            </div>
-          </div>
+      {/* Main layout: Left | Center canvas | drag handle | Right chat */}
+      <main className="flex flex-1 min-h-0 overflow-hidden">
 
-          {/* SimulationPanel rendered below canvas only in simulate mode */}
-          {isSim && (
-            <div className="border-t border-zinc-800 bg-zinc-900 overflow-y-auto shrink-0 max-h-80">
+        {/* LEFT: Telemetry / Sim controls */}
+        <aside className="w-64 shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            {isSim ? (
               <SimulationPanel
                 exercise={simExercise}
                 onExerciseChange={(v) => {
@@ -262,24 +269,45 @@ export default function HomePage() {
                 onFrame={handleSimFrame}
                 onRepEvent={handleRepEvent}
               />
-            </div>
-          )}
-        </div>
-
-        {/* Right panel: StreamInspector (top 60%) + CoachingChat (bottom 40%) */}
-        <aside className="w-72 shrink-0 border-l border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
-          <div className="flex-[3] min-h-0 p-4 overflow-y-auto border-b border-zinc-800">
-            <StreamInspector
-              status={isLive ? status : "connected"}
-              fps={fps}
-              latencyMs={latencyMs}
-              frame={frame}
-            />
-          </div>
-          <div className="flex-[2] min-h-0 overflow-hidden">
-            <CoachingChat messages={messages} onClear={clearMessages} />
+            ) : (
+              <StreamInspector
+                status={isLive ? status : "connected"}
+                fps={fps}
+                latencyMs={latencyMs}
+                frame={frame}
+                exercise={activeExercise}
+              />
+            )}
           </div>
         </aside>
+
+        {/* CENTER: Canvas */}
+        <div className="flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden">
+          <div className="w-full h-full max-w-3xl">
+            <SkeletonCanvas
+              wsUrl={wsUrl}
+              mockMode={!isLive}
+              getMockFrame={getMockFrame}
+              onFrame={handleFrame}
+              controlledFrame={isSim ? simFrame : null}
+            />
+          </div>
+        </div>
+
+        {/* Drag handle */}
+        <div
+          className="w-1 shrink-0 cursor-col-resize bg-zinc-800 hover:bg-zinc-500 active:bg-zinc-400 transition-colors"
+          onMouseDown={handleDragStart}
+        />
+
+        {/* RIGHT: Coach log — resizable, self-contained scroll */}
+        <aside
+          className="shrink-0 border-l border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden"
+          style={{ width: chatWidth }}
+        >
+          <CoachingChat messages={messages} onClear={clearMessages} />
+        </aside>
+
       </main>
     </div>
   );
