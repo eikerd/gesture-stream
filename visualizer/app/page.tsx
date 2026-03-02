@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { Play, Pause, RotateCw } from "lucide-react";
 import { SkeletonCanvas } from "@/components/SkeletonCanvas";
 import { StreamInspector } from "@/components/StreamInspector";
 import { CoachingChat } from "@/components/CoachingChat";
@@ -14,6 +15,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { type ChatMessage } from "@/lib/chatTypes";
 import { type RepEvent } from "@/lib/repCounter";
 import Link from "next/link";
+
+// ─── Turntable transform ──────────────────────────────────────────────────────
+// Simulates a camera orbiting the figure by scaling x around the body centre.
+// Full revolution every TURNTABLE_PERIOD seconds.
+const TURNTABLE_PERIOD = 10;
+
+function applyTurntable(frame: PoseFrame): PoseFrame {
+  const angle = (Date.now() / 1000) * (2 * Math.PI / TURNTABLE_PERIOD);
+  const lHip = frame.keypoints.find((k) => k.name === "left_hip");
+  const rHip = frame.keypoints.find((k) => k.name === "right_hip");
+  const cx = lHip && rHip ? (lHip.x + rHip.x) / 2 : 0.5;
+  const cosA = Math.cos(angle);
+  return {
+    ...frame,
+    keypoints: frame.keypoints.map((kp) => ({ ...kp, x: cx + (kp.x - cx) * cosA })),
+  };
+}
 
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 type AppMode = "mock" | "simulate" | "live";
@@ -31,6 +49,8 @@ export default function HomePage() {
   const [mode, setMode] = useState<AppMode>("mock");
   const [exercise, setExercise] = useState<ExerciseId>("jumping-jacks");
   const [simExercise, setSimExercise] = useState<ExerciseId>("squat");
+  const [autoCycle, setAutoCycle] = useState(false);
+  const [turntable, setTurntable] = useState(false);
   const [wsHost, setWsHost] = useState("pi-zero-ai.local");
   const [wsInput, setWsInput] = useState("pi-zero-ai.local");
   const [fps, setFps] = useState(0);
@@ -75,7 +95,22 @@ export default function HomePage() {
     void prefetchRealData("squat");
   }, []);
 
-  const getMockFrame = useCallback(() => generateMockFrame(exercise), [exercise]);
+  const getMockFrame = useCallback(() => {
+    const f = generateMockFrame(exercise);
+    return turntable ? applyTurntable(f) : f;
+  }, [exercise, turntable]);
+
+  // Auto-cycle: advance exercise every 5s while active in mock mode
+  useEffect(() => {
+    if (!autoCycle || mode !== "mock") return;
+    const id = setInterval(() => {
+      setExercise((prev) => {
+        const idx = SEVEN_MINUTE_EXERCISES.findIndex((e) => e.id === prev);
+        return SEVEN_MINUTE_EXERCISES[(idx + 1) % SEVEN_MINUTE_EXERCISES.length].id;
+      });
+    }, 5000);
+    return () => clearInterval(id);
+  }, [autoCycle, mode]);
 
   const handleFrame = useCallback(
     (f: PoseFrame, newFps: number, newLatency: number) => {
@@ -196,6 +231,7 @@ export default function HomePage() {
             setLatencyMs(0);
             clearMessages();
             setStatus(next === "live" ? "disconnected" : "connected");
+            if (next !== "mock") { setAutoCycle(false); setTurntable(false); }
           }}
         >
           <TabsList className="h-7 bg-zinc-800">
@@ -205,24 +241,57 @@ export default function HomePage() {
           </TabsList>
         </Tabs>
 
-        {/* Mock exercise selector — always opens downward */}
+        {/* Mock exercise selector + auto-cycle + turntable */}
         {isMock && (
-          <Select value={exercise} onValueChange={(v) => setExercise(v as ExerciseId)}>
-            <SelectTrigger className="h-7 w-48 text-xs bg-zinc-800 border-zinc-700 text-zinc-100">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent
-              position="popper"
-              sideOffset={4}
-              className="bg-zinc-800 border-zinc-700 text-zinc-100 z-50"
+          <>
+            <Select value={exercise} onValueChange={(v) => setExercise(v as ExerciseId)}>
+              <SelectTrigger className="h-7 w-48 text-xs bg-zinc-800 border-zinc-700 text-zinc-100">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                position="popper"
+                sideOffset={4}
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 z-50"
+              >
+                {SEVEN_MINUTE_EXERCISES.map((ex) => (
+                  <SelectItem key={ex.id} value={ex.id} className="text-xs">
+                    {ex.order}. {ex.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Auto-cycle: play/pause through all exercises, 5s each */}
+            <button
+              onClick={() => setAutoCycle((v) => !v)}
+              title={autoCycle ? "Stop auto-cycle" : "Auto-cycle exercises (5 s each)"}
+              className={`h-7 w-7 flex items-center justify-center rounded border transition-colors ${
+                autoCycle
+                  ? "border-green-600 bg-green-900/30 text-green-400"
+                  : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+              }`}
             >
-              {SEVEN_MINUTE_EXERCISES.map((ex) => (
-                <SelectItem key={ex.id} value={ex.id} className="text-xs">
-                  {ex.order}. {ex.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              {autoCycle
+                ? <Pause className="w-3.5 h-3.5" />
+                : <Play  className="w-3.5 h-3.5" />}
+            </button>
+
+            {/* Turntable: orbit the character once every 10 s */}
+            <button
+              onClick={() => setTurntable((v) => !v)}
+              title={turntable ? "Stop turntable" : "Rotate character (1 rev / 10 s)"}
+              className={`h-7 w-7 flex items-center justify-center rounded border transition-colors ${
+                turntable
+                  ? "border-blue-600 bg-blue-900/30 text-blue-400"
+                  : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+              }`}
+            >
+              <RotateCw
+                className="w-3.5 h-3.5"
+                style={turntable ? { animation: "spin 3s linear infinite" } : undefined}
+              />
+            </button>
+          </>
         )}
 
         {isLive && (
