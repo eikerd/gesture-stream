@@ -100,7 +100,7 @@ function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBa
 
 export default function HomePage() {
   const [mode, setMode] = useState<AppMode>("mock");
-  const [exercise, setExercise] = useState<ExerciseId>("jumping-jacks");
+  const [exercise, setExercise] = useState<ExerciseId>("squat");
   const [simExercise, setSimExercise] = useState<ExerciseId>("squat");
   const [autoCycle, setAutoCycle] = useState(false);
   const [turntable, setTurntable] = useState(false);
