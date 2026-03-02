@@ -8,13 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { type PoseFrame } from "@/lib/pose";
-import { generateMockFrame } from "@/lib/mock";
+import { generateMockFrame, SEVEN_MINUTE_EXERCISES, type ExerciseId } from "@/lib/mock";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import Link from "next/link";
 
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 
 export default function HomePage() {
   const [mockMode, setMockMode] = useState(true);
+  const [exercise, setExercise] = useState<ExerciseId>("jumping-jacks");
   const [wsHost, setWsHost] = useState("pi-zero-ai.local");
   const [wsInput, setWsInput] = useState("pi-zero-ai.local");
   const [fps, setFps] = useState(0);
@@ -22,7 +24,7 @@ export default function HomePage() {
   const [frame, setFrame] = useState<PoseFrame | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
 
-  const getMockFrame = useCallback(() => generateMockFrame(), []);
+  const getMockFrame = useCallback(() => generateMockFrame(exercise), [exercise]);
 
   const handleFrame = useCallback(
     (f: PoseFrame, newFps: number, newLatency: number) => {
@@ -59,6 +61,21 @@ export default function HomePage() {
             }}
           />
         </div>
+
+        {mockMode && (
+          <Select value={exercise} onValueChange={(v) => setExercise(v as ExerciseId)}>
+            <SelectTrigger className="h-7 w-48 text-xs bg-zinc-800 border-zinc-700 text-zinc-100">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-zinc-800 border-zinc-700 text-zinc-100">
+              {SEVEN_MINUTE_EXERCISES.map((ex) => (
+                <SelectItem key={ex.id} value={ex.id} className="text-xs">
+                  {ex.order}. {ex.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
         {!mockMode && (
           <form
