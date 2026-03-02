@@ -7,6 +7,32 @@ import {
   confidenceColor,
 } from "@/lib/pose";
 
+// ─── Auto-fit bounding box ────────────────────────────────────────────────────
+// Expands instantly to accommodate new keypoint extents,
+// contracts slowly (≈2 s at 30 fps) so scale doesn't jump between frames.
+interface BBox { x0: number; x1: number; y0: number; y1: number }
+
+function updateSmoothedBBox(sb: BBox | null, kps: PoseFrame["keypoints"]): BBox {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const kp of kps) {
+    if (kp.score < 0.3) continue;
+    if (kp.x < x0) x0 = kp.x;
+    if (kp.x > x1) x1 = kp.x;
+    if (kp.y < y0) y0 = kp.y;
+    if (kp.y > y1) y1 = kp.y;
+  }
+  if (!isFinite(x0)) return sb ?? { x0: 0, x1: 1, y0: 0, y1: 1 };
+  if (!sb) return { x0, x1, y0, y1 };
+
+  const SLOW = 0.015; // contract ~2 s at 30 fps
+  return {
+    x0: x0 < sb.x0 ? x0 : sb.x0 + (x0 - sb.x0) * SLOW,
+    x1: x1 > sb.x1 ? x1 : sb.x1 + (x1 - sb.x1) * SLOW,
+    y0: y0 < sb.y0 ? y0 : sb.y0 + (y0 - sb.y0) * SLOW,
+    y1: y1 > sb.y1 ? y1 : sb.y1 + (y1 - sb.y1) * SLOW,
+  };
+}
+
 interface SkeletonCanvasProps {
   wsUrl: string;
   mockMode: boolean;
@@ -28,6 +54,7 @@ export function SkeletonCanvas({
   const mockRafRef = useRef<number | null>(null);
   const fpsCounterRef = useRef({ frames: 0, lastTime: Date.now() });
   const currentFpsRef = useRef(0);
+  const smoothBBoxRef = useRef<BBox | null>(null);
 
   // Sync canvas internal resolution to its CSS display size (DPR-aware)
   useEffect(() => {
@@ -64,29 +91,44 @@ export function SkeletonCanvas({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const W = canvas.width;
-    const H = canvas.height;
+    // Always draw in CSS pixels — the context is DPR-scaled by the ResizeObserver
+    // so using canvas.width (physical pixels) would double-scale on Retina displays.
+    const W = canvas.offsetWidth  || canvas.width;
+    const H = canvas.offsetHeight || canvas.height;
 
     ctx.clearRect(0, 0, W, H);
-
-    // Background
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(0, 0, W, H);
 
     const kps = frame.keypoints;
 
+    // ── Auto-fit: smooth bbox → uniform scale → center ───────────────────────
+    smoothBBoxRef.current = updateSmoothedBBox(smoothBBoxRef.current, kps);
+    const { x0, x1, y0, y1 } = smoothBBoxRef.current;
+
+    const bw = Math.max(x1 - x0, 0.05);
+    const bh = Math.max(y1 - y0, 0.05);
+    const PAD = 0.12; // 12% padding on each side
+    const px0 = x0 - bw * PAD, px1 = x1 + bw * PAD;
+    const py0 = y0 - bh * PAD, py1 = y1 + bh * PAD;
+
+    const scale = Math.min(W / (px1 - px0), H / (py1 - py0));
+    const offX  = (W - scale * (px1 - px0)) / 2 - scale * px0;
+    const offY  = (H - scale * (py1 - py0)) / 2 - scale * py0;
+
+    const sx = (x: number) => x * scale + offX;
+    const sy = (y: number) => y * scale + offY;
+
     // Draw connections
     for (const [fromIdx, toIdx] of COCO_CONNECTIONS) {
       const from = kps[fromIdx];
-      const to = kps[toIdx];
-      if (!from || !to) continue;
-      if (from.score < 0.3 || to.score < 0.3) continue;
+      const to   = kps[toIdx];
+      if (!from || !to || from.score < 0.3 || to.score < 0.3) continue;
 
-      const avgScore = (from.score + to.score) / 2;
       ctx.beginPath();
-      ctx.moveTo(from.x * W, from.y * H);
-      ctx.lineTo(to.x * W, to.y * H);
-      ctx.strokeStyle = confidenceColor(avgScore);
+      ctx.moveTo(sx(from.x), sy(from.y));
+      ctx.lineTo(sx(to.x),   sy(to.y));
+      ctx.strokeStyle = confidenceColor((from.score + to.score) / 2);
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
       ctx.stroke();
@@ -95,9 +137,8 @@ export function SkeletonCanvas({
     // Draw joints
     for (const kp of kps) {
       if (kp.score < 0.3) continue;
-      const r = 4 + kp.score * 5;
       ctx.beginPath();
-      ctx.arc(kp.x * W, kp.y * H, r, 0, Math.PI * 2);
+      ctx.arc(sx(kp.x), sy(kp.y), 4 + kp.score * 5, 0, Math.PI * 2);
       ctx.fillStyle = confidenceColor(kp.score);
       ctx.fill();
     }
@@ -128,6 +169,8 @@ export function SkeletonCanvas({
   // Mock mode loop
   useEffect(() => {
     if (!mockMode || controlledFrame != null) return;
+    // Reset smoothed bbox so new exercise snaps to its own scale immediately
+    smoothBBoxRef.current = null;
 
     const tick = () => {
       const frame = getMockFrame();

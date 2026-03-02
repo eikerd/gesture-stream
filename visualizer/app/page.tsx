@@ -36,9 +36,9 @@ function applyTurntable(frame: PoseFrame): PoseFrame {
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 type AppMode = "mock" | "simulate" | "live";
 
-const CHAT_WIDTH_MIN = 180;
+const CHAT_WIDTH_MIN = 120;
 const CHAT_WIDTH_MAX = 560;
-const CHAT_WIDTH_DEFAULT = 288;
+const CHAT_WIDTH_DEFAULT = 220;
 
 let _msgCounter = 0;
 function makeId(): string {
@@ -391,8 +391,8 @@ export default function HomePage() {
       {/* Main layout: Left | Center canvas | drag handle | Right chat */}
       <main className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* LEFT: Telemetry / Sim controls */}
-        <aside className="w-64 shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
+        {/* LEFT: Telemetry / Sim controls — hidden on small screens, narrower on medium */}
+        <aside className="hidden md:flex flex-col md:w-52 xl:w-64 shrink-0 border-r border-zinc-800 bg-zinc-900 overflow-hidden">
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             {isSim ? (
               <SimulationPanel
@@ -417,7 +417,7 @@ export default function HomePage() {
         </aside>
 
         {/* CENTER: Canvas */}
-        <div className="flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden relative">
+        <div className="flex-1 min-h-0 p-2 md:p-4 flex items-center justify-center overflow-hidden relative">
           {/* Data-source badge ─ top-centre overlay */}
           <DataSourceBadge
             mode={mode}
@@ -425,7 +425,7 @@ export default function HomePage() {
             exercise={isMock ? exercise : undefined}
             realDataReady={realDataReady}
           />
-          <div className="w-full h-full max-w-3xl">
+          <div className="w-full h-full">
             <SkeletonCanvas
               wsUrl={wsUrl}
               mockMode={!isLive}
