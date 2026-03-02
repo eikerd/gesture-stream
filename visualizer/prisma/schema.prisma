@@ -1,0 +1,28 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String     @id @default(cuid())
+  startedAt DateTime   @default(now())
+  endedAt   DateTime?
+  exercise  String?
+  reps      RepEvent[]
+}
+
+model RepEvent {
+  id        String   @id @default(cuid())
+  session   Session  @relation(fields: [sessionId], references: [id])
+  sessionId String
+  timestamp DateTime @default(now())
+  repNumber Int
+  exercise  String
+}

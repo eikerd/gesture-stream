@@ -1,0 +1,15 @@
+[Unit]
+Description=IMX500 Pose Publisher
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pose-publisher
+ExecStart=/usr/bin/python3 /home/pi/pose-publisher/main.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
