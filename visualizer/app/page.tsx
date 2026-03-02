@@ -45,6 +45,59 @@ function makeId(): string {
   return `msg-${Date.now()}-${++_msgCounter}`;
 }
 
+// ─── Data-source badge ────────────────────────────────────────────────────────
+
+interface DataSourceBadgeProps {
+  mode: AppMode;
+  status: ConnectionStatus;
+  exercise?: ExerciseId;
+  realDataReady: Set<ExerciseId>;
+}
+
+function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBadgeProps) {
+  let label: string;
+  let dotColor: string;
+  let textColor: string;
+  let bgColor: string;
+  let pulse = false;
+
+  if (mode === "live") {
+    switch (status) {
+      case "connected":
+        label = "LIVE"; dotColor = "bg-red-500"; textColor = "text-red-300";
+        bgColor = "bg-red-950/70 border-red-800"; pulse = true;
+        break;
+      case "reconnecting":
+        label = "RECONNECTING"; dotColor = "bg-amber-400"; textColor = "text-amber-300";
+        bgColor = "bg-amber-950/70 border-amber-800"; pulse = true;
+        break;
+      default:
+        label = "DISCONNECTED"; dotColor = "bg-zinc-500"; textColor = "text-zinc-400";
+        bgColor = "bg-zinc-900/70 border-zinc-700"; pulse = false;
+    }
+  } else if (mode === "simulate") {
+    label = "SIMULATED"; dotColor = "bg-violet-500"; textColor = "text-violet-300";
+    bgColor = "bg-violet-950/70 border-violet-800";
+  } else {
+    // mock mode
+    const isReal = exercise ? realDataReady.has(exercise) : false;
+    if (isReal) {
+      label = "REAL DATA"; dotColor = "bg-green-500"; textColor = "text-green-300";
+      bgColor = "bg-green-950/70 border-green-800";
+    } else {
+      label = "GENERATED"; dotColor = "bg-amber-500"; textColor = "text-amber-300";
+      bgColor = "bg-amber-950/70 border-amber-800";
+    }
+  }
+
+  return (
+    <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-mono font-semibold tracking-widest ${bgColor} ${textColor}`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor} ${pulse ? "animate-pulse" : ""}`} />
+      {label}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [mode, setMode] = useState<AppMode>("mock");
   const [exercise, setExercise] = useState<ExerciseId>("jumping-jacks");
@@ -90,9 +143,14 @@ export default function HomePage() {
     };
   }, []);
 
+  // Track which exercises have real capture data loaded (for source label)
+  const [realDataReady, setRealDataReady] = useState<Set<ExerciseId>>(new Set());
+
   // Prefetch real datasets in the background; procedural fallback is used until ready
   useEffect(() => {
-    void prefetchRealData("squat");
+    void prefetchRealData("squat").then(() =>
+      setRealDataReady((prev) => new Set([...prev, "squat"]))
+    );
   }, []);
 
   const getMockFrame = useCallback(() => {
@@ -356,7 +414,14 @@ export default function HomePage() {
         </aside>
 
         {/* CENTER: Canvas */}
-        <div className="flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden">
+        <div className="flex-1 min-h-0 p-4 flex items-center justify-center overflow-hidden relative">
+          {/* Data-source badge ─ top-centre overlay */}
+          <DataSourceBadge
+            mode={mode}
+            status={status}
+            exercise={isMock ? exercise : undefined}
+            realDataReady={realDataReady}
+          />
           <div className="w-full h-full max-w-3xl">
             <SkeletonCanvas
               wsUrl={wsUrl}
