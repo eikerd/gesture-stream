@@ -104,8 +104,8 @@ export default function HomePage() {
   const [simExercise, setSimExercise] = useState<ExerciseId>("squat");
   const [autoCycle, setAutoCycle] = useState(false);
   const [turntable, setTurntable] = useState(false);
-  const [wsHost, setWsHost] = useState("pi-zero-ai.local");
-  const [wsInput, setWsInput] = useState("pi-zero-ai.local");
+  const [wsHost, setWsHost] = useState("192.168.42.230");
+  const [wsInput, setWsInput] = useState("192.168.42.230");
   const [fps, setFps] = useState(0);
   const [latencyMs, setLatencyMs] = useState(0);
   const [frame, setFrame] = useState<PoseFrame | null>(null);
