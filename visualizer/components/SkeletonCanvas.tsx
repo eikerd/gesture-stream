@@ -26,6 +26,37 @@ export function SkeletonCanvas({
   const fpsCounterRef = useRef({ frames: 0, lastTime: Date.now() });
   const currentFpsRef = useRef(0);
 
+  // Sync canvas internal resolution to its CSS display size (DPR-aware)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => {
+      const dpr = window.devicePixelRatio ?? 1;
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        const ctx = canvas.getContext("2d");
+        if (ctx) ctx.scale(dpr, dpr);
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  // Clear canvas when disconnected (mock off, no WS data)
+  useEffect(() => {
+    if (mockMode) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#0a0a0a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }, [mockMode]);
+
   const drawFrame = useCallback((canvas: HTMLCanvasElement, frame: PoseFrame) => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
