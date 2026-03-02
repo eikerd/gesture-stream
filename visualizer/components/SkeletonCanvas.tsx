@@ -12,6 +12,8 @@ interface SkeletonCanvasProps {
   mockMode: boolean;
   getMockFrame: () => PoseFrame;
   onFrame: (frame: PoseFrame, fps: number, latencyMs: number) => void;
+  /** When provided, skips internal loops and just renders this frame directly. */
+  controlledFrame?: PoseFrame | null;
 }
 
 export function SkeletonCanvas({
@@ -19,6 +21,7 @@ export function SkeletonCanvas({
   mockMode,
   getMockFrame,
   onFrame,
+  controlledFrame = null,
 }: SkeletonCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -114,9 +117,17 @@ export function SkeletonCanvas({
     return currentFpsRef.current;
   }, []);
 
+  // Controlled-frame mode: just draw the provided frame, no loops
+  useEffect(() => {
+    if (!controlledFrame) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    drawFrame(canvas, controlledFrame);
+  }, [controlledFrame, drawFrame]);
+
   // Mock mode loop
   useEffect(() => {
-    if (!mockMode) return;
+    if (!mockMode || controlledFrame != null) return;
 
     const tick = () => {
       const frame = getMockFrame();
@@ -135,11 +146,11 @@ export function SkeletonCanvas({
         mockRafRef.current = null;
       }
     };
-  }, [mockMode, getMockFrame, onFrame, drawFrame, computeFps]);
+  }, [mockMode, controlledFrame, getMockFrame, onFrame, drawFrame, computeFps]);
 
   // WebSocket mode
   useEffect(() => {
-    if (mockMode) return;
+    if (mockMode || controlledFrame != null) return;
 
     let ws: WebSocket;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
@@ -181,7 +192,7 @@ export function SkeletonCanvas({
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [mockMode, wsUrl, drawFrame, onFrame, computeFps]);
+  }, [mockMode, controlledFrame, wsUrl, drawFrame, onFrame, computeFps]);
 
   return (
     <canvas

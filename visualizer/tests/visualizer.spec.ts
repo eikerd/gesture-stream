@@ -30,18 +30,15 @@ test('canvas element is present and has non-zero dimensions', async ({ page }) =
   expect(box!.height).toBeGreaterThan(0);
 });
 
-// 3. Mock mode on by default — Switch shows checked state
+// 3. Mock mode on by default — "Mock" tab is active
 test('mock mode is on by default and switch is checked', async ({ page }) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
 
-  // The switch for mock mode should exist
-  const mockSwitch = page.locator('#mock-toggle');
-  await expect(mockSwitch).toBeVisible();
-
-  // The switch should be in the "on" (checked) state by default
-  // Radix Switch sets aria-checked="true" when on
-  await expect(mockSwitch).toHaveAttribute('aria-checked', 'true');
+  // The "Mock" tab should be selected (aria-selected=true) by default
+  const mockTab = page.getByRole('tab', { name: 'Mock' });
+  await expect(mockTab).toBeVisible();
+  await expect(mockTab).toHaveAttribute('data-state', 'active');
 });
 
 // 4. Stream inspector panel visible — status badge, FPS/latency stats present
@@ -62,37 +59,38 @@ test('stream inspector panel is visible with status badge and FPS/latency stats'
   await expect(latencyLabel).toBeVisible();
 });
 
-// 5. Mock toggle — click Switch to turn off, click again to turn on; canvas still present
+// 5. Mode tabs — switch to Live and back to Mock; canvas always present
 test('mock toggle can be turned off and on; canvas remains present', async ({ page }) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
 
-  const mockSwitch = page.locator('#mock-toggle');
+  const mockTab = page.getByRole('tab', { name: 'Mock' });
+  const liveTab = page.getByRole('tab', { name: 'Live' });
 
-  // Turn mock mode OFF
-  await mockSwitch.click();
-  await expect(mockSwitch).toHaveAttribute('aria-checked', 'false');
+  // Switch to Live mode
+  await liveTab.click();
+  await expect(liveTab).toHaveAttribute('data-state', 'active');
 
   // Canvas is still present
   await expect(page.locator('canvas').first()).toBeVisible();
 
-  // Turn mock mode back ON
-  await mockSwitch.click();
-  await expect(mockSwitch).toHaveAttribute('aria-checked', 'true');
+  // Switch back to Mock mode
+  await mockTab.click();
+  await expect(mockTab).toHaveAttribute('data-state', 'active');
 
   // Canvas is still present
   await expect(page.locator('canvas').first()).toBeVisible();
 });
 
-// 6. WS host input — input field present, can type a new hostname (only visible when mock is off)
+// 6. WS host input — only visible in Live mode
 test('WS host input is present and accepts input when mock mode is off', async ({ page }) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
 
-  // Turn off mock mode to reveal the host input
-  const mockSwitch = page.locator('#mock-toggle');
-  await mockSwitch.click();
-  await expect(mockSwitch).toHaveAttribute('aria-checked', 'false');
+  // Switch to Live mode to reveal the host input
+  const liveTab = page.getByRole('tab', { name: 'Live' });
+  await liveTab.click();
+  await expect(liveTab).toHaveAttribute('data-state', 'active');
 
   // Input field should now be visible
   const wsInput = page.locator('input[placeholder="pi-zero-ai.local"]');
