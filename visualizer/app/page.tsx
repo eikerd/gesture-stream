@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { type PoseFrame } from "@/lib/pose";
-import { generateMockFrame, SEVEN_MINUTE_EXERCISES, type ExerciseId } from "@/lib/mock";
+import { generateMockFrame, prefetchRealData, SEVEN_MINUTE_EXERCISES, type ExerciseId } from "@/lib/mock";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { type ChatMessage } from "@/lib/chatTypes";
 import { type RepEvent } from "@/lib/repCounter";
@@ -68,6 +68,11 @@ export default function HomePage() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
+  }, []);
+
+  // Prefetch real datasets in the background; procedural fallback is used until ready
+  useEffect(() => {
+    void prefetchRealData("squat");
   }, []);
 
   const getMockFrame = useCallback(() => generateMockFrame(exercise), [exercise]);

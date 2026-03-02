@@ -1,4 +1,5 @@
 import { type PoseFrame, COCO_KEYPOINT_NAMES } from "./pose";
+import { createReplay } from "./mediapipe";
 
 // ─── Exercise registry ────────────────────────────────────────────────────────
 
@@ -157,33 +158,38 @@ function jumpingJacks(t: number): [number,number][] {
   return addMotion(blend(STAND, OPEN, u), t, 0.003, 0.6);
 }
 
-/** 2. Wall Sit — seated static hold, 90° knee (Zengin: ≤100°) */
+/**
+ * 2. Wall Sit — SIDE VIEW, person facing right, back flat against wall (left edge).
+ * Classic 90° knee: thighs parallel to floor, shins vertical.
+ * This view makes the knee angle immediately obvious.
+ */
 function wallSit(t: number): [number,number][] {
-  // Seated: head much lower, back against wall, knees at 90°
+  // Wall is at x≈0.12. Person faces right.
+  // Near-camera side = left landmarks; far side = right landmarks (slight +x,+y offset).
   const SIT: [number,number][] = [
-    [0.500, 0.290],
-    [0.473, 0.277],
-    [0.527, 0.277],
-    [0.447, 0.283],
-    [0.553, 0.283],
-    [0.406, 0.425], // shoulders
-    [0.594, 0.425],
-    [0.360, 0.520], // elbows resting on thighs
-    [0.640, 0.520],
-    [0.365, 0.625], // wrists on knees
-    [0.635, 0.625],
-    [0.430, 0.620], // hips low (at seat height)
-    [0.570, 0.620],
-    [0.370, 0.625], // knees forward (shin vertical below hips)
-    [0.630, 0.625],
-    [0.370, 0.875], // ankles below knees — fixed to floor
-    [0.630, 0.875],
+    [0.215, 0.280], // nose
+    [0.215, 0.265],
+    [0.225, 0.268], // right eye (far side, slightly right)
+    [0.201, 0.271], // left ear
+    [0.228, 0.274], // right ear
+    [0.175, 0.420], // left shoulder (against wall)
+    [0.200, 0.435], // right shoulder (depth offset)
+    [0.380, 0.440], // left elbow (arm resting on thigh)
+    [0.405, 0.455],
+    [0.460, 0.448], // left wrist (on knee)
+    [0.485, 0.463],
+    [0.175, 0.630], // left hip (back against wall, low)
+    [0.200, 0.645], // right hip
+    [0.490, 0.638], // left knee (thigh is horizontal → knee far from hip in x)
+    [0.515, 0.653], // right knee
+    [0.490, 0.876], // left ankle (shin vertical → ankle directly below knee)
+    [0.515, 0.876], // right ankle
   ];
-  // Subtle quad tremor at 4 Hz
-  const tremor = 0.006 * Math.sin(2 * Math.PI * 4.0 * t);
-  const pts = addMotion(SIT, t, 0.0025, 0.2);
-  pts[13][0] += tremor;
-  pts[14][0] -= tremor;
+  // Subtle quad tremor at 3.5 Hz
+  const tremor = 0.005 * Math.sin(2 * Math.PI * 3.5 * t);
+  const pts = addMotion(SIT, t, 0.0022, 0.15);
+  pts[13][1] += tremor;
+  pts[14][1] += tremor;
   return pts;
 }
 
@@ -329,45 +335,53 @@ function squat(t: number): [number,number][] {
   return addMotion(blend(STAND, BOTTOM, u), t, 0.003, 0.8);
 }
 
-/** 7. Tricep Dip — seated-edge, hips lower/raise, elbows bend behind (Zengin: 0.55 Hz) */
+/**
+ * 7. Tricep Dip — SIDE VIEW, person facing right.
+ * Hands on bench behind them (left/back, low x), body hanging forward,
+ * knees extended forward. Elbows bend to ~90° on the down phase.
+ * This is the standard coaching image orientation.
+ */
 function tricepDip(t: number): [number,number][] {
+  // Bench surface is at y≈0.520. Hands fixed on bench behind body.
+  // "HIGH" = arms extended (~160°), hips at seat height.
+  // "LOW"  = elbows bent (~90°), hips dropped below bench.
   const HIGH: [number,number][] = [
-    [0.500, 0.295],
-    [0.473, 0.282],
-    [0.527, 0.282],
-    [0.447, 0.288],
-    [0.553, 0.288],
-    [0.406, 0.430], // shoulders at edge of seat
-    [0.594, 0.430],
-    [0.345, 0.460], // elbows slightly bent (arms extended, ~160°)
-    [0.655, 0.460],
-    [0.320, 0.520], // wrists on surface (fixed)
-    [0.680, 0.520],
-    [0.430, 0.595], // hips high (at seat edge)
-    [0.570, 0.595],
-    [0.430, 0.730], // knees at ~90°
-    [0.570, 0.730],
-    [0.430, 0.878],
-    [0.570, 0.878],
+    [0.320, 0.278], // nose
+    [0.320, 0.263],
+    [0.330, 0.266],
+    [0.306, 0.269],
+    [0.333, 0.272],
+    [0.290, 0.415], // left shoulder (near camera)
+    [0.315, 0.430], // right shoulder (depth offset)
+    [0.195, 0.428], // left elbow (arm behind, slightly bent)
+    [0.220, 0.443],
+    [0.155, 0.518], // left wrist — fixed on bench surface
+    [0.180, 0.518],
+    [0.460, 0.520], // left hip — at bench height
+    [0.485, 0.535],
+    [0.600, 0.518], // left knee (legs roughly horizontal)
+    [0.625, 0.533],
+    [0.720, 0.522], // left ankle
+    [0.745, 0.537],
   ];
   const LOW: [number,number][] = [
-    [0.500, 0.310],
-    [0.473, 0.297],
-    [0.527, 0.297],
-    [0.447, 0.303],
-    [0.553, 0.303],
-    [0.406, 0.445],
-    [0.594, 0.445],
-    [0.342, 0.508], // elbows bent to ~90°
-    [0.658, 0.508],
-    [0.320, 0.520], // wrists fixed
-    [0.680, 0.520],
-    [0.430, 0.720], // hips dip below seat
-    [0.570, 0.720],
-    [0.430, 0.730],
-    [0.570, 0.730],
-    [0.430, 0.878],
-    [0.570, 0.878],
+    [0.320, 0.310], // nose (body drops)
+    [0.320, 0.295],
+    [0.330, 0.298],
+    [0.306, 0.301],
+    [0.333, 0.304],
+    [0.295, 0.448], // shoulders drop
+    [0.320, 0.463],
+    [0.210, 0.500], // elbows bent to ~90°
+    [0.235, 0.515],
+    [0.155, 0.518], // wrists fixed on bench
+    [0.180, 0.518],
+    [0.460, 0.630], // hips dipped well below bench
+    [0.485, 0.645],
+    [0.600, 0.540], // knees stay roughly level
+    [0.625, 0.555],
+    [0.720, 0.530],
+    [0.745, 0.545],
   ];
   const u = repPhase(t, 0.55);
   return addMotion(blend(HIGH, LOW, u), t, 0.003, 0.2);
@@ -545,8 +559,49 @@ const GENERATORS: Record<ExerciseId, (t: number) => [number, number][]> = {
   "side-plank":       sidePlank,
 };
 
+// ─── Real-data registry (populated by prefetchRealData) ──────────────────────
+//
+// Module-level cache keyed by ExerciseId. When populated, generateMockFrame
+// uses the real frames instead of the procedural generator — no API changes needed.
+
+interface DatasetFile {
+  frames: PoseFrame[];
+  fps: number;
+  loop: boolean;
+}
+
+const _realGenerators = new Map<ExerciseId, (wallTimeSec: number) => PoseFrame>();
+
+/**
+ * Pre-fetch a real dataset for an exercise from /public/data/<exercise>.json.
+ * Must be called client-side (e.g., from a React useEffect).
+ * After the fetch, generateMockFrame automatically uses the real data.
+ *
+ * Available datasets: "squat"
+ */
+export async function prefetchRealData(exercise: ExerciseId): Promise<void> {
+  if (_realGenerators.has(exercise)) return; // already loaded
+  try {
+    const res = await fetch(`/data/${exercise}.json`);
+    if (!res.ok) return; // no file for this exercise — stay procedural
+    const data: DatasetFile = await res.json();
+    const replay = createReplay(data.frames, { fps: data.fps ?? 10, loop: data.loop ?? true });
+    _realGenerators.set(exercise, replay);
+  } catch {
+    // Silently fall back to procedural — offline or file missing
+  }
+}
+
+// ─── Frame generator ──────────────────────────────────────────────────────────
+
 export function generateMockFrame(exercise: ExerciseId = "jumping-jacks", t?: number): PoseFrame {
   const now = t ?? Date.now() / 1000;
+
+  // Use real data if prefetched
+  const real = _realGenerators.get(exercise);
+  if (real) return real(now);
+
+  // Procedural fallback
   const positions = GENERATORS[exercise](now);
 
   // Confidence scores: face kps slightly higher; simulate slow drift + tiny noise
