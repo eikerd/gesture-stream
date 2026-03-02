@@ -19,13 +19,50 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Optional
 
 import websockets
 from websockets.server import WebSocketServerProtocol
 
 from config import Config
+
+# ---------------------------------------------------------------------------
+# Shared thumbnail state (written by PoseProducer, read by SnapshotHandler)
+# ---------------------------------------------------------------------------
+
+_thumb_lock = threading.Lock()
+_thumb_jpeg: bytes = b""
+
+
+class SnapshotHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler that serves the latest camera thumbnail as JPEG."""
+
+    def do_GET(self) -> None:
+        if self.path != "/snapshot":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        with _thumb_lock:
+            data = _thumb_jpeg
+
+        if data:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_response(503)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        pass  # suppress default HTTP access logs
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -281,15 +318,39 @@ class PoseProducer:
 
     def run(self) -> None:
         """Blocking main loop — call from a thread."""
+        global _thumb_jpeg
+
         picam2, imx500 = _setup_camera(self.cfg)
         is_higherhrnet = "higherhrnet" in imx500.network_name.lower() if hasattr(imx500, "network_name") else True
 
         log.info("Pose producer started (model: %s)", getattr(imx500, "network_name", "unknown"))
 
+        import cv2
+        frame_count = 0
+        # Capture thumbnail every ~3 s (45 frames at 15 fps)
+        THUMB_INTERVAL = max(1, self.cfg.FRAMERATE * 3)
+
         try:
             while not self._stop:
                 metadata = picam2.capture_metadata()
                 ts = time.time()
+
+                # Throttled thumbnail capture
+                frame_count += 1
+                if frame_count % THUMB_INTERVAL == 0:
+                    try:
+                        arr = picam2.capture_array("main")  # XBGR8888 (H, W, 4)
+                        small = cv2.resize(arr, (320, 240))
+                        # XBGR8888 on little-endian ARM is stored as [R,G,B,X] in memory,
+                        # so treat as RGBA and convert to BGR for imencode.
+                        bgr = cv2.cvtColor(small, cv2.COLOR_RGBA2BGR)
+                        _, jpeg = cv2.imencode(
+                            ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 55]
+                        )
+                        with _thumb_lock:
+                            _thumb_jpeg = jpeg.tobytes()
+                    except Exception as exc:
+                        log.debug("thumbnail error: %s", exc)
 
                 try:
                     outputs = imx500.get_outputs(metadata, add_batch=True)
@@ -388,6 +449,14 @@ class PoseServer:
         """Start the WebSocket server and the pose producer, then serve forever."""
         loop = asyncio.get_running_loop()
         producer = PoseProducer(self.cfg, self._queue, loop)
+
+        # Start snapshot HTTP server on a daemon thread
+        snap_server = HTTPServer(("0.0.0.0", self.cfg.SNAPSHOT_PORT), SnapshotHandler)
+        snap_thread = threading.Thread(target=snap_server.serve_forever, daemon=True)
+        snap_thread.start()
+        log.info(
+            "Snapshot server on http://0.0.0.0:%d/snapshot", self.cfg.SNAPSHOT_PORT
+        )
 
         # Run blocking camera loop in a thread pool executor
         executor_future = loop.run_in_executor(None, producer.run)

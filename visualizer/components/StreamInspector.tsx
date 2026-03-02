@@ -1,9 +1,47 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { type PoseFrame } from "@/lib/pose";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+// ─── Camera thumbnail (live mode only) ───────────────────────────────────────
+
+function CameraThumb({ snapshotUrl }: { snapshotUrl: string }) {
+  const [src, setSrc] = useState("");
+  const [ok, setOk] = useState(true);
+
+  useEffect(() => {
+    const refresh = () => {
+      setSrc(`${snapshotUrl}?t=${Date.now()}`);
+      setOk(true);
+    };
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [snapshotUrl]);
+
+  return (
+    <div className="relative w-full rounded overflow-hidden bg-zinc-800" style={{ aspectRatio: "4/3" }}>
+      {src && ok ? (
+        <img
+          src={src}
+          alt="Pi camera"
+          className="w-full h-full object-cover"
+          onError={() => setOk(false)}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center text-zinc-600 text-xs">
+          {ok ? "loading…" : "no preview"}
+        </div>
+      )}
+      <span className="absolute bottom-1 right-1.5 text-zinc-500 text-[10px] font-mono leading-none">
+        Pi cam
+      </span>
+    </div>
+  );
+}
 
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 
@@ -13,6 +51,7 @@ interface StreamInspectorProps {
   latencyMs: number;
   frame: PoseFrame | null;
   exercise?: string;
+  snapshotUrl?: string;
 }
 
 // Which keypoints matter most per exercise (used for highlighting)
@@ -74,6 +113,7 @@ export function StreamInspector({
   latencyMs,
   frame,
   exercise,
+  snapshotUrl,
 }: StreamInspectorProps) {
   const keySet = exercise ? (KEY_KEYPOINTS[exercise] ?? null) : null;
 
@@ -85,6 +125,7 @@ export function StreamInspector({
           <CardTitle className="text-sm text-zinc-400">Connection</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          {snapshotUrl && <CameraThumb snapshotUrl={snapshotUrl} />}
           <Badge variant={STATUS_VARIANT[status]} className="w-fit">
             {STATUS_LABEL[status]}
           </Badge>

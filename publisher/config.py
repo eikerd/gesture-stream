@@ -26,6 +26,7 @@ class Config:
     """
 
     WS_PORT: int = field(default=8765)
+    SNAPSHOT_PORT: int = field(default=8766)
     MQTT_BROKER: Optional[str] = field(default=None)
     MQTT_PORT: int = field(default=1883)
     MQTT_TOPIC: str = field(default="fitness/pose")
@@ -43,6 +44,7 @@ class Config:
         """
         return cls(
             WS_PORT=int(os.environ.get("WS_PORT", 8765)),
+            SNAPSHOT_PORT=int(os.environ.get("SNAPSHOT_PORT", 8766)),
             MQTT_BROKER=os.environ.get("MQTT_BROKER") or None,
             MQTT_PORT=int(os.environ.get("MQTT_PORT", 1883)),
             MQTT_TOPIC=os.environ.get("MQTT_TOPIC", "fitness/pose"),

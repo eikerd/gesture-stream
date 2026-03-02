@@ -268,6 +268,7 @@ export default function HomePage() {
   }, [mode, addMessage]);
 
   const wsUrl = `ws://${wsHost}:8765`;
+  const snapshotUrl = `http://${wsHost}:8766/snapshot`;
   const isMock = mode === "mock";
   const isLive = mode === "live";
   const isSim = mode === "simulate";
@@ -411,6 +412,7 @@ export default function HomePage() {
                 latencyMs={latencyMs}
                 frame={frame}
                 exercise={activeExercise}
+                snapshotUrl={isLive ? snapshotUrl : undefined}
               />
             )}
           </div>
