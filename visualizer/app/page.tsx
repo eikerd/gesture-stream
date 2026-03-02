@@ -242,7 +242,7 @@ export default function HomePage() {
             <div className="w-full max-w-2xl aspect-[4/3]">
               <SkeletonCanvas
                 wsUrl={wsUrl}
-                mockMode={isMock}
+                mockMode={!isLive}
                 getMockFrame={getMockFrame}
                 onFrame={handleFrame}
                 controlledFrame={isSim ? simFrame : null}

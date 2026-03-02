@@ -195,7 +195,7 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
         setCompletionPct(counter.getCompletionPct());
       }
     }, TICK_RATE);
-  }, [isRunning, exercise, variant, onFrame, stopSession]);
+  }, [isRunning, exercise, variant, onFrame, stopSession, onRepEvent]);
 
   const stop = useCallback(() => {
     if (intervalRef.current) {
