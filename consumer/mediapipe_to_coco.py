@@ -10,6 +10,8 @@ Supported input formats
   --format xy_nolabel  CSV: x0,y0, ...  no label                   ( 66 cols)
   --format auto        Detect from column count (default)
   --format json        Each line is a JSON array of 33 {x,y,z,visibility} dicts
+  --format named       CSV: label, nose_x, nose_y, nose_z, nose_v, ...
+                       (NgoQuocBao-style; named columns, COCO-17 subset)
 
 Output
 ------
@@ -26,6 +28,10 @@ Usage examples
   # DanielGuarnizo squats CSV (pixel space 640×360, full format)
   python mediapipe_to_coco.py squats.csv -o squats_coco.json \\
       --width 640 --height 360 --format full --fps 30
+
+  # NgoQuocBao plank CSV (normalised, named columns, correct-form rows only)
+  python mediapipe_to_coco.py plank_train.csv -o plank.json \\
+      --format named --filter-label C --every-nth 3 --max-frames 90 --fps 10
 
   # Normalised xy CSV, no label column
   python mediapipe_to_coco.py run.csv -o run_coco.json --format xy_nolabel
@@ -203,6 +209,68 @@ def parse_csv_file(
     return frames, labels
 
 
+def parse_named_csv_file(
+    path: Path,
+    fps: float,
+    image_width:  Optional[float],
+    image_height: Optional[float],
+    filter_label: Optional[str] = None,
+    every_nth: int = 1,
+    max_frames: Optional[int] = None,
+) -> tuple[list[dict], list[Optional[str]]]:
+    """
+    NgoQuocBao named-column format:
+      label, nose_x, nose_y, nose_z, nose_v, left_shoulder_x, left_shoulder_y, ...
+
+    Columns are named by COCO keypoint name + '_x/_y/_z/_v'.
+    Only a subset of COCO-17 keypoints may be present; missing ones get score=0.
+    Eyes and ears are typically absent from gym-exercise captures.
+    """
+    scale_x = 1 / image_width  if image_width  else 1.0
+    scale_y = 1 / image_height if image_height else 1.0
+
+    frames: list[dict] = []
+    labels: list[Optional[str]] = []
+    frame_idx = 0  # counts output frames
+
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row_idx, row in enumerate(reader):
+            if not any(v.strip() for v in row.values()):
+                continue
+
+            label = row.get("label") or row.get("class")
+
+            # label filter
+            if filter_label is not None and label != filter_label:
+                continue
+
+            # stride filter
+            if row_idx % every_nth != 0:
+                continue
+
+            keypoints = []
+            for name in COCO_KEYPOINT_NAMES:
+                x_col, y_col, v_col = f"{name}_x", f"{name}_y", f"{name}_v"
+                if x_col in row and row[x_col].strip():
+                    x     = float(row[x_col]) * scale_x
+                    y     = float(row[y_col]) * scale_y
+                    score = float(row[v_col]) if v_col in row else 1.0
+                else:
+                    x, y, score = 0.0, 0.0, 0.0  # landmark absent → invisible
+
+                keypoints.append({"name": name, "x": x, "y": y, "score": score})
+
+            frames.append({"ts": frame_idx / fps, "keypoints": keypoints})
+            labels.append(label)
+            frame_idx += 1
+
+            if max_frames is not None and frame_idx >= max_frames:
+                break
+
+    return frames, labels
+
+
 def parse_json_file(
     path: Path,
     fps: float,
@@ -252,9 +320,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Input CSV or JSON file(s)")
     p.add_argument("-o", "--output", type=Path, default=None, metavar="FILE",
                    help="Output file (default: stdout)")
-    p.add_argument("--format", choices=["auto", "full", "xy", "xyzv", "xy_nolabel", "json"],
+    p.add_argument("--format",
+                   choices=["auto", "full", "xy", "xyzv", "xy_nolabel", "json", "named"],
                    default="auto", metavar="FMT",
-                   help="Input data layout (default: auto-detect)")
+                   help="Input data layout (default: auto-detect). "
+                        "'named' = NgoQuocBao-style named columns (nose_x, left_shoulder_y, ...)")
     p.add_argument("--output-format", choices=["json", "ndjson"],
                    default="json", dest="output_format",
                    help="Output encoding: json (default) or ndjson (one frame per line)")
@@ -268,6 +338,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="CSV has no header row")
     p.add_argument("--include-labels", action="store_true",
                    help="Include the label column in output JSON")
+    p.add_argument("--filter-label", default=None, metavar="LABEL",
+                   help="Only include rows whose label column matches LABEL (e.g. 'C' for correct)")
+    p.add_argument("--every-nth", type=int, default=1, metavar="N",
+                   help="Keep every Nth row (stride for downsampling, default: 1 = keep all)")
+    p.add_argument("--max-frames", type=int, default=None, metavar="N",
+                   help="Stop after N output frames")
     return p
 
 
@@ -287,11 +363,29 @@ def main() -> None:
         if args.format == "json" or path.suffix.lower() == ".json":
             frames, labels = parse_json_file(
                 path, args.fps, args.width, args.height)
+        elif args.format == "named":
+            frames, labels = parse_named_csv_file(
+                path, args.fps, args.width, args.height,
+                filter_label=args.filter_label,
+                every_nth=args.every_nth,
+                max_frames=args.max_frames)
         else:
             frames, labels = parse_csv_file(
                 path, args.format, args.fps,
                 args.width, args.height,
                 skip_header=not args.no_header)
+
+        # Apply every-nth stride and label filter for non-named formats
+        if args.format != "named":
+            if args.filter_label is not None:
+                paired = [(f, l) for f, l in zip(frames, labels) if l == args.filter_label]
+                frames, labels = (list(x) for x in zip(*paired)) if paired else ([], [])
+            if args.every_nth > 1:
+                frames = frames[::args.every_nth]
+                labels = labels[::args.every_nth]
+            if args.max_frames is not None:
+                frames = frames[:args.max_frames]
+                labels = labels[:args.max_frames]
 
         all_frames.extend(frames)
         all_labels.extend(labels)

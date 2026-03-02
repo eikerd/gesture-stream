@@ -82,7 +82,7 @@ function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBa
     // mock mode
     const isReal = exercise ? realDataReady.has(exercise) : false;
     if (isReal) {
-      label = "REAL DATA"; dotColor = "bg-green-500"; textColor = "text-green-300";
+      label = "CONVERTED"; dotColor = "bg-green-500"; textColor = "text-green-300";
       bgColor = "bg-green-950/70 border-green-800";
     } else {
       label = "GENERATED"; dotColor = "bg-amber-500"; textColor = "text-amber-300";
@@ -148,9 +148,12 @@ export default function HomePage() {
 
   // Prefetch real datasets in the background; procedural fallback is used until ready
   useEffect(() => {
-    void prefetchRealData("squat").then(() =>
-      setRealDataReady((prev) => new Set([...prev, "squat"]))
-    );
+    const ids = ["squat", "plank", "lunge", "push-up"] as const;
+    for (const id of ids) {
+      void prefetchRealData(id as ExerciseId).then(() =>
+        setRealDataReady((prev) => new Set([...prev, id as ExerciseId]))
+      );
+    }
   }, []);
 
   const getMockFrame = useCallback(() => {
