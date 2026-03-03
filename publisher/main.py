@@ -439,6 +439,13 @@ class PoseProducer:
                 else:
                     keypoints = _parse_posenet_raw(outputs, self.cfg)
 
+                # Camera is alive — reset watchdog regardless of whether a
+                # person is detected. The watchdog only guards against the
+                # picamera2 V4L2 deadlock where capture_metadata() blocks
+                # forever; it should NOT restart just because nobody is
+                # standing in front of the camera.
+                watchdog.ping()
+
                 if not keypoints:
                     continue
 
@@ -447,7 +454,6 @@ class PoseProducer:
                 asyncio.run_coroutine_threadsafe(
                     self._put(payload), self.loop
                 )
-                watchdog.ping()
         finally:
             watchdog.stop()
             picam2.stop()
