@@ -465,7 +465,15 @@ class PoseServer:
 
         log.info("WebSocket server listening on ws://0.0.0.0:%d", self.cfg.WS_PORT)
         try:
-            async with websockets.serve(self._handler, "0.0.0.0", self.cfg.WS_PORT):
+            async with websockets.serve(
+                self._handler,
+                "0.0.0.0",
+                self.cfg.WS_PORT,
+                # Detect stale USB-gadget connections quickly.
+                # Default ping_interval/timeout (20 s each) is too slow for USB drops.
+                ping_interval=5,   # send a ping every 5 s
+                ping_timeout=10,   # drop if no pong within 10 s
+            ):
                 await asyncio.gather(executor_future, broadcaster_task)
         except asyncio.CancelledError:
             pass

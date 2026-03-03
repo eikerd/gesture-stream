@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { type PoseFrame } from "@/lib/pose";
+import { type ConnEvent, connHealthStats } from "@/lib/connHealth";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -81,6 +82,10 @@ interface StreamInspectorProps {
   exercise?: string;
   /** When provided, the camera thumbnail is shown (tries each URL in order). */
   snapshotUrls?: string[];
+  /** Hostname/IP of the currently-connected WS server, if known. */
+  connectedHost?: string | null;
+  /** Connection event log for health panel. */
+  connEvents?: ConnEvent[];
 }
 
 // Which keypoints matter most per exercise (used for highlighting)
@@ -136,6 +141,36 @@ function colorizeJson(obj: unknown): string {
   );
 }
 
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m${rem}s`;
+}
+
+function useUptime(status: ConnectionStatus): string {
+  const [, setTick] = useState(0);
+  const connectedAtRef = useState<{ ts: number }>(() => ({ ts: 0 }))[0];
+
+  useEffect(() => {
+    if (status === "connected") {
+      connectedAtRef.ts = Date.now();
+      setTick(0); // reset display immediately
+    }
+  }, [status, connectedAtRef]);
+
+  useEffect(() => {
+    if (status !== "connected") return;
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [status]);
+
+  if (status !== "connected" || connectedAtRef.ts === 0) return "—";
+  return fmtMs(Date.now() - connectedAtRef.ts);
+}
+
 export function StreamInspector({
   status,
   fps,
@@ -143,8 +178,15 @@ export function StreamInspector({
   frame,
   exercise,
   snapshotUrls,
+  connectedHost,
+  connEvents = [],
 }: StreamInspectorProps) {
   const keySet = exercise ? (KEY_KEYPOINTS[exercise] ?? null) : null;
+  const uptime = useUptime(status);
+  const { dropCount, avgSessionMs } = connHealthStats(connEvents);
+
+  // Last 5 events for the mini log, most-recent first
+  const recentEvents = connEvents.slice(-5).reverse();
 
   return (
     <div className="flex flex-col gap-4">
@@ -167,9 +209,58 @@ export function StreamInspector({
             <div className="text-zinc-100 font-mono">
               {latencyMs > 0 ? `${latencyMs}ms` : "—"}
             </div>
+            <div className="text-zinc-400">Uptime</div>
+            <div className="text-zinc-100 font-mono">{uptime}</div>
+            {connectedHost && (
+              <>
+                <div className="text-zinc-400">Host</div>
+                <div className="text-zinc-100 font-mono text-xs truncate" title={connectedHost}>
+                  {connectedHost}
+                </div>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
+
+      {/* Connection health — only shown in live mode when there's history */}
+      {connEvents.length > 0 && (
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-zinc-400">Connection Health</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs">
+              <span className="text-zinc-400">Drops</span>
+              <span className={`font-mono ${dropCount > 0 ? "text-red-400" : "text-green-400"}`}>
+                {dropCount}
+              </span>
+              <span className="text-zinc-400">Avg session</span>
+              <span className="text-zinc-100 font-mono">
+                {avgSessionMs != null ? fmtMs(avgSessionMs) : "—"}
+              </span>
+            </div>
+            {/* Mini event log */}
+            <div className="mt-1 space-y-0.5">
+              {recentEvents.map((ev, i) => {
+                const isConn = ev.type === "connect";
+                const age = Math.round((Date.now() - ev.ts) / 1000);
+                return (
+                  <div key={i} className="flex items-center gap-1.5 text-[10px] font-mono">
+                    <span className={isConn ? "text-green-500" : "text-red-500"}>
+                      {isConn ? "▲" : "▼"}
+                    </span>
+                    <span className="text-zinc-500">{age}s ago</span>
+                    {ev.duration != null && (
+                      <span className="text-zinc-600 ml-auto">{fmtMs(ev.duration)}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Keypoint confidence bars */}
       <Card className="bg-zinc-900 border-zinc-800">

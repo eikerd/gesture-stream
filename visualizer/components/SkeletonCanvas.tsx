@@ -42,6 +42,8 @@ interface SkeletonCanvasProps {
   getMockFrame: () => PoseFrame;
   onFrame: (frame: PoseFrame, fps: number, latencyMs: number) => void;
   onConnectionChange?: (status: WsStatus) => void;
+  /** Called with the winning WS URL when a connection is established. */
+  onConnectedHost?: (url: string) => void;
   /** When provided, skips internal loops and just renders this frame directly. */
   controlledFrame?: PoseFrame | null;
 }
@@ -52,6 +54,7 @@ export function SkeletonCanvas({
   getMockFrame,
   onFrame,
   onConnectionChange,
+  onConnectedHost,
   controlledFrame = null,
 }: SkeletonCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -231,6 +234,7 @@ export function SkeletonCanvas({
               if (s !== ws && s.readyState < WebSocket.CLOSING) s.close();
             }
             onConnectionChange?.("connected");
+            onConnectedHost?.(url);
 
             ws.onmessage = (event) => {
               try {
@@ -247,7 +251,7 @@ export function SkeletonCanvas({
             ws.onclose = () => {
               wsRef.current = null;
               onConnectionChange?.("disconnected");
-              reconnectTimeout = setTimeout(connect, 3000);
+              reconnectTimeout = setTimeout(connect, 2000);
             };
           };
 
@@ -259,7 +263,7 @@ export function SkeletonCanvas({
               closedCount++;
               if (closedCount === wsUrls.length) {
                 onConnectionChange?.("disconnected");
-                reconnectTimeout = setTimeout(connect, 3000);
+                reconnectTimeout = setTimeout(connect, 2000);
               }
             }
           };
@@ -285,7 +289,7 @@ export function SkeletonCanvas({
       }
       pendingSocketsRef.current = [];
     };
-  }, [mockMode, controlledFrame, wsUrls, drawFrame, onFrame, computeFps, onConnectionChange]);
+  }, [mockMode, controlledFrame, wsUrls, drawFrame, onFrame, computeFps, onConnectionChange, onConnectedHost]);
 
   return (
     <canvas

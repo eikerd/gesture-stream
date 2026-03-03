@@ -117,6 +117,9 @@ export default function HomePage() {
   const [latencyMs, setLatencyMs] = useState(0);
   const [frame, setFrame] = useState<PoseFrame | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [connectedHost, setConnectedHost] = useState<string | null>(null);
+  const [connEvents, setConnEvents] = useState<import("@/lib/connHealth").ConnEvent[]>([]);
+  const connectedAtRef = useRef<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const repCounterRef = useRef(0);
   const simRepHistoryRef = useRef<{ repNumber: number; formOk: boolean; angle: number }[]>([]);
@@ -279,6 +282,27 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, [mode, addMessage]);
 
+  // Connection health tracking for Live mode
+  const handleStatusChange = useCallback((newStatus: ConnectionStatus) => {
+    setStatus(newStatus);
+    const now = Date.now();
+    if (newStatus === "connected") {
+      connectedAtRef.current = now;
+      setConnEvents((prev) => [...prev.slice(-49), { type: "connect", ts: now }]);
+    } else if (newStatus === "disconnected") {
+      const duration = connectedAtRef.current ? now - connectedAtRef.current : undefined;
+      connectedAtRef.current = null;
+      setConnectedHost(null);
+      setConnEvents((prev) => [...prev.slice(-49), { type: "disconnect", ts: now, duration }]);
+    }
+  }, []);
+
+  const handleConnectedHost = useCallback((url: string) => {
+    // Extract hostname from ws://host:port
+    const match = url.match(/^wss?:\/\/([^:/]+)/);
+    setConnectedHost(match ? match[1] : url);
+  }, []);
+
   // Build ordered candidate list: user-supplied host first (if any), then defaults
   const wsUrls = useMemo(() => {
     const extra = extraHost ? [`ws://${extraHost}:8765`] : [];
@@ -433,6 +457,8 @@ export default function HomePage() {
                 frame={frame}
                 exercise={activeExercise}
                 snapshotUrls={isLive ? snapshotUrls : undefined}
+                connectedHost={isLive ? connectedHost : null}
+                connEvents={isLive ? connEvents : []}
               />
             )}
           </div>
@@ -453,7 +479,8 @@ export default function HomePage() {
               mockMode={!isLive}
               getMockFrame={getMockFrame}
               onFrame={handleFrame}
-              onConnectionChange={isLive ? setStatus : undefined}
+              onConnectionChange={isLive ? handleStatusChange : undefined}
+              onConnectedHost={isLive ? handleConnectedHost : undefined}
               controlledFrame={isSim ? simFrame : null}
             />
           </div>
