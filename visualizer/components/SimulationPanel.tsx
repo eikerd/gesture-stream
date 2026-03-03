@@ -132,7 +132,7 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
     counterRef.current = createRepCounter(exercise);
   }, [exercise]);
 
-  const stopSession = useCallback((elapsed: number) => {
+  const stopSession = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -167,7 +167,7 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
       if (remaining <= 0) {
         setTimeLeft(0);
         simTimeRef.current = SIMULATION_DURATION;
-        stopSession(SIMULATION_DURATION);
+        stopSession();
         return;
       }
 
@@ -199,24 +199,7 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
     }, TICK_RATE);
   }, [isRunning, exercise, variant, onFrame, stopSession, onRepEvent]);
 
-  const stop = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    setIsRunning(false);
-    const total = goodRepsRef.current + badRepsRef.current;
-    const avgAngle =
-      peakAnglesRef.current.length > 0
-        ? peakAnglesRef.current.reduce((a, b) => a + b, 0) / peakAnglesRef.current.length
-        : 0;
-    setSummary({
-      totalReps: total,
-      goodReps: goodRepsRef.current,
-      badReps: badRepsRef.current,
-      avgPeakAngle: avgAngle,
-    });
-  }, []);
+  const stop = useCallback(() => stopSession(), [stopSession]);
 
   const reset = useCallback(() => {
     if (intervalRef.current) {

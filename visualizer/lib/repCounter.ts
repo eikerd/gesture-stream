@@ -1,4 +1,5 @@
 import { type PoseFrame, COCO_KEYPOINT_NAMES } from "./pose";
+import { type ExerciseId } from "./mock";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,8 +84,8 @@ export class SquatCounter extends ExerciseRepCounter {
     const a = angle(hip, knee, ankle);
     this.currentAngle = a;
 
-    // Completion percentage: 0% at full extension (160°), 100% at full depth (100°)
-    this.completionPct = Math.max(0, Math.min(100, ((160 - a) / (160 - this.DOWN_THRESHOLD)) * 100));
+    // Completion percentage: 0% at full extension (UP_THRESHOLD), 100% at full depth (DOWN_THRESHOLD)
+    this.completionPct = Math.max(0, Math.min(100, ((this.UP_THRESHOLD - a) / (this.UP_THRESHOLD - this.DOWN_THRESHOLD)) * 100));
 
     if (this.phase === "up" && a < this.DOWN_THRESHOLD) {
       this.phase = "down";
@@ -122,7 +123,7 @@ export class PushUpCounter extends ExerciseRepCounter {
     const a = angle(shoulder, elbow, wrist);
     this.currentAngle = a;
 
-    this.completionPct = Math.max(0, Math.min(100, ((160 - a) / (160 - this.DOWN_THRESHOLD)) * 100));
+    this.completionPct = Math.max(0, Math.min(100, ((this.UP_THRESHOLD - a) / (this.UP_THRESHOLD - this.DOWN_THRESHOLD)) * 100));
 
     if (this.phase === "up" && a < this.DOWN_THRESHOLD) {
       this.phase = "down";
@@ -160,7 +161,7 @@ export class LungeCounter extends ExerciseRepCounter {
     const a = angle(hip, knee, ankle);
     this.currentAngle = a;
 
-    this.completionPct = Math.max(0, Math.min(100, ((160 - a) / (160 - this.DOWN_THRESHOLD)) * 100));
+    this.completionPct = Math.max(0, Math.min(100, ((this.UP_THRESHOLD - a) / (this.UP_THRESHOLD - this.DOWN_THRESHOLD)) * 100));
 
     if (this.phase === "up" && a < this.DOWN_THRESHOLD) {
       this.phase = "down";
@@ -220,10 +221,11 @@ export class HighKneesCounter extends ExerciseRepCounter {
     if (this.phase === "up" && lift < 0.02 && this.peakAngle > this.LIFT_THRESHOLD) {
       this.count += 1;
       const isGood = this.peakAngle >= this.GOOD_LIFT_MIN;
+      // Use same % units as currentAngle so callers handle high-knees consistently
       const event: RepEvent = {
         repNumber: this.count,
         isGood,
-        peakAngle: Math.round(this.peakAngle * 1000),
+        peakAngle: Math.round(this.peakAngle * 1000) / 10,
       };
       this.phase = "down";
       this.peakAngle = 0;
@@ -243,6 +245,8 @@ export class JumpingJackCounter extends ExerciseRepCounter {
   private readonly UP_THRESHOLD = 120;
   private readonly DOWN_THRESHOLD = 50;
   private readonly GOOD_ANGLE_MIN = 120;
+  // Arms start at sides — phase must be "down" so the first raise is detected
+  protected phase: RepPhase = "down";
 
   update(frame: PoseFrame): RepEvent | null {
     const elbow = kp(frame, "left_elbow");
@@ -274,8 +278,6 @@ export class JumpingJackCounter extends ExerciseRepCounter {
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
-
-import { type ExerciseId } from "./mock";
 
 export function createRepCounter(exerciseId: ExerciseId): ExerciseRepCounter | null {
   switch (exerciseId) {

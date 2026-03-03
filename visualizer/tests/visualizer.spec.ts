@@ -30,15 +30,14 @@ test('canvas element is present and has non-zero dimensions', async ({ page }) =
   expect(box!.height).toBeGreaterThan(0);
 });
 
-// 3. Mock mode on by default — "Mock" tab is active
-test('mock mode is on by default and switch is checked', async ({ page }) => {
+// 3. Live mode on by default — "Live" tab is active
+test('live mode is on by default', async ({ page }) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
 
-  // The "Mock" tab should be selected (aria-selected=true) by default
-  const mockTab = page.getByRole('tab', { name: 'Mock' });
-  await expect(mockTab).toBeVisible();
-  await expect(mockTab).toHaveAttribute('data-state', 'active');
+  const liveTab = page.getByRole('tab', { name: 'Live' });
+  await expect(liveTab).toBeVisible();
+  await expect(liveTab).toHaveAttribute('data-state', 'active');
 });
 
 // 4. Stream inspector panel visible — status badge, FPS/latency stats present
@@ -46,7 +45,9 @@ test('stream inspector panel is visible with status badge and FPS/latency stats'
   await page.goto('/');
   await page.waitForLoadState('networkidle');
 
-  // Status badge — in mock mode it should show "Connected"
+  // Switch to Mock mode so the badge shows "Connected" without needing a real Pi
+  await page.getByRole('tab', { name: 'Mock' }).click();
+
   const badge = page.locator('text=Connected').first();
   await expect(badge).toBeVisible();
 
@@ -93,7 +94,7 @@ test('WS host input is present and accepts input when mock mode is off', async (
   await expect(liveTab).toHaveAttribute('data-state', 'active');
 
   // Input field should now be visible
-  const wsInput = page.locator('input[placeholder="pi-zero-ai.local"]');
+  const wsInput = page.locator('input[placeholder="auto-discovering…"]');
   await expect(wsInput).toBeVisible();
 
   // Clear and type a new hostname

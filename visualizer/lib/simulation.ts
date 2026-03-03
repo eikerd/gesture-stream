@@ -57,7 +57,6 @@ type KP17 = [
  */
 function simSquat(t: number, variant: SimulationVariant): [number, number][] {
   const u = repCycle(t);
-  const isDown = u > 0.1; // down phase is majority of cycle
 
   // Good: body drops 0.22, knees spread naturally
   // Bad: body only drops 0.10, knees cave inward by 0.08
@@ -91,8 +90,6 @@ function simPushUp(t: number, variant: SimulationVariant): [number, number][] {
   // Good: full depth (chest drops to floor level)
   // Bad: hips sag (hip y rises) and arms only partially bend
   const armDrop = variant === "good" ? lerp(0, 0.12, u) : lerp(0, 0.06, u);
-  const elbY = lerp(0.38, lerp(0.38, 0.50, u), 1); // elbow bends
-  const chestY = lerp(0.42, lerp(0.42, 0.54, u), 1);
 
   // Hip sag on bad form: hips drop below body line during down phase
   const hipSag = variant === "bad" ? lerp(0, 0.06, u) : 0;
