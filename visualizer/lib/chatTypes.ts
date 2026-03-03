@@ -17,9 +17,10 @@ export interface ChatMessage {
   score?: number;
 }
 
-export interface RepEvent {
+/** Rep summary payload sent to /api/coach — distinct from repCounter.RepEvent. */
+export interface CoachRepSummary {
   repNumber: number;
   angle?: number;
   formOk: boolean;
-  exercise: string;
+  exercise?: string;
 }

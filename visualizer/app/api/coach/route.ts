@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type RepEvent } from "@/lib/chatTypes";
+import { type CoachRepSummary } from "@/lib/chatTypes";
+
+const COACH_MODEL =
+  process.env.ANTHROPIC_COACH_MODEL ?? "claude-haiku-4-5-20251001";
 
 const STATIC_TIPS: Record<string, string[]> = {
   squat: [
@@ -44,21 +47,37 @@ function getStaticTip(exercise: string): string {
   return tips[Math.floor(Math.random() * tips.length)];
 }
 
-interface CoachRequestBody {
+interface RawBody {
+  exercise?: unknown;
+  reps?: unknown;
+  formOk?: unknown;
+}
+
+function parseBody(raw: RawBody): {
   exercise: string;
-  reps: RepEvent[];
+  reps: CoachRepSummary[];
   formOk: boolean;
+} {
+  return {
+    exercise:
+      typeof raw.exercise === "string" ? raw.exercise.slice(0, 50) : "",
+    reps: Array.isArray(raw.reps) ? (raw.reps as CoachRepSummary[]) : [],
+    formOk: Boolean(raw.formOk),
+  };
 }
 
 export async function POST(request: NextRequest) {
-  let body: CoachRequestBody;
+  let raw: RawBody;
   try {
-    body = (await request.json()) as CoachRequestBody;
+    raw = (await request.json()) as RawBody;
   } catch {
     return NextResponse.json({ tip: getStaticTip("") });
   }
 
-  const { exercise, reps, formOk } = body;
+  const { exercise, reps, formOk } = parseBody(raw);
+  if (!exercise) {
+    return NextResponse.json({ tip: getStaticTip("") }, { status: 400 });
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -80,7 +99,7 @@ export async function POST(request: NextRequest) {
     const prompt = `You are a fitness coach. Exercise: ${exercise}. Last 5 reps: ${repSummary || "no data"}. Overall form: ${formOk ? "good" : "needs improvement"}. Give a single encouraging 1-sentence coaching tip. Be specific and actionable.`;
 
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: COACH_MODEL,
       max_tokens: 80,
       messages: [{ role: "user", content: prompt }],
     });

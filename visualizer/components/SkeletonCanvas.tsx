@@ -164,13 +164,14 @@ export function SkeletonCanvas({
     return currentFpsRef.current;
   }, []);
 
-  // Controlled-frame mode: just draw the provided frame, no loops
+  // Controlled-frame mode: draw the provided frame and emit to parent
   useEffect(() => {
     if (!controlledFrame) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     drawFrame(canvas, controlledFrame);
-  }, [controlledFrame, drawFrame]);
+    onFrame(controlledFrame, computeFps(), 0);
+  }, [controlledFrame, drawFrame, onFrame, computeFps]);
 
   // Mock mode loop
   useEffect(() => {

@@ -161,17 +161,19 @@ export function SimulationPanel({ exercise, onExerciseChange, onFrame, onRepEven
 
     intervalRef.current = setInterval(() => {
       const wallElapsed = (Date.now() - startWall) / 1000;
-      const remaining = SIMULATION_DURATION - wallElapsed;
+      const totalElapsed = startSim + wallElapsed;
+      const remaining = SIMULATION_DURATION - totalElapsed;
 
       if (remaining <= 0) {
         setTimeLeft(0);
-        stopSession(wallElapsed);
+        simTimeRef.current = SIMULATION_DURATION;
+        stopSession(SIMULATION_DURATION);
         return;
       }
 
       setTimeLeft(Math.ceil(remaining));
 
-      simTimeRef.current = startSim + wallElapsed;
+      simTimeRef.current = totalElapsed;
       const t = simTimeRef.current;
 
       const frame = generateSimFrame(exercise, variant, t);

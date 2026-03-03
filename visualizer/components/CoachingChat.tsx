@@ -157,6 +157,7 @@ export function CoachingChat({ messages, onClear }: CoachingChatProps) {
         </span>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={() => setTtsEnabled((v) => !v)}
             className={`transition-colors ${
               ttsEnabled ? "text-cyan-400 hover:text-cyan-200" : "text-zinc-600 hover:text-zinc-300"
@@ -171,6 +172,7 @@ export function CoachingChat({ messages, onClear }: CoachingChatProps) {
             )}
           </button>
           <button
+            type="button"
             onClick={onClear}
             className="text-xs font-mono text-zinc-600 hover:text-zinc-300 transition-colors px-1"
             aria-label="Clear log"

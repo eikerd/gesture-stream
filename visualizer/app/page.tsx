@@ -120,6 +120,8 @@ export default function HomePage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const repCounterRef = useRef(0);
   const simRepHistoryRef = useRef<{ repNumber: number; formOk: boolean; angle: number }[]>([]);
+  // Epoch incremented on clearMessages — lets in-flight /api/coach fetches detect staleness
+  const messageEpochRef = useRef(0);
 
   // Simulate mode: latest frame from SimulationPanel
   const [simFrame, setSimFrame] = useState<PoseFrame | null>(null);
@@ -215,6 +217,7 @@ export default function HomePage() {
   );
 
   const clearMessages = useCallback(() => {
+    messageEpochRef.current += 1;
     setMessages([]);
     repCounterRef.current = 0;
     simRepHistoryRef.current = [];
@@ -236,6 +239,7 @@ export default function HomePage() {
       });
 
       if (event.repNumber % 5 === 0) {
+        const epoch = messageEpochRef.current;
         const recentReps = simRepHistoryRef.current.slice(-5);
         void fetch("/api/coach", {
           method: "POST",
@@ -248,6 +252,7 @@ export default function HomePage() {
         })
           .then((res) => res.json() as Promise<{ tip?: string }>)
           .then((data) => {
+            if (messageEpochRef.current !== epoch) return; // session was cleared
             if (data.tip) addMessage({ type: "coach_tip", text: data.tip });
           })
           .catch(() => {});
