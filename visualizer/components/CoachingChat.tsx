@@ -31,14 +31,14 @@ function formatTimestamp(ts: number, originTs: number): string {
 
 function getMessageColor(type: ChatMessageType): string {
   switch (type) {
-    case "rep_good":
-      return "text-green-400";
-    case "rep_bad":
-      return "text-red-400";
-    case "form_warning":
-      return "text-amber-400";
-    case "coach_tip":
-      return "text-cyan-400";
+    case "rep_good":      return "text-green-400";
+    case "rep_bad":       return "text-red-400";
+    case "form_warning":  return "text-amber-400";
+    case "coach_tip":     return "text-cyan-400";
+    // WebSocket connection events — steel blue, distinct from exercise data
+    case "ws_connected":    return "text-sky-400";
+    case "ws_disconnected": return "text-zinc-500";
+    case "ws_reconnecting": return "text-amber-500";
     case "session_start":
     case "session_end":
     case "timer":
@@ -49,22 +49,17 @@ function getMessageColor(type: ChatMessageType): string {
 
 function getMessagePrefix(type: ChatMessageType): string {
   switch (type) {
-    case "rep_good":
-      return "✓";
-    case "rep_bad":
-      return "✗";
-    case "form_warning":
-      return "⚠";
-    case "coach_tip":
-      return "🤖";
-    case "session_start":
-      return "▶";
-    case "session_end":
-      return "■";
-    case "timer":
-      return "🕐";
-    default:
-      return " ";
+    case "rep_good":      return "✓";
+    case "rep_bad":       return "✗";
+    case "form_warning":  return "⚠";
+    case "coach_tip":     return "🤖";
+    case "ws_connected":    return "▲";
+    case "ws_disconnected": return "▼";
+    case "ws_reconnecting": return "↻";
+    case "session_start": return "▶";
+    case "session_end":   return "■";
+    case "timer":         return "🕐";
+    default:              return " ";
   }
 }
 

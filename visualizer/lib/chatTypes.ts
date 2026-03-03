@@ -5,7 +5,10 @@ export type ChatMessageType =
   | "coach_tip"
   | "session_start"
   | "session_end"
-  | "timer";
+  | "timer"
+  | "ws_connected"
+  | "ws_disconnected"
+  | "ws_reconnecting";
 
 export interface ChatMessage {
   id: string;

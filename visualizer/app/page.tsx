@@ -51,7 +51,9 @@ function makeId(): string {
   return `msg-${Date.now()}-${++_msgCounter}`;
 }
 
-// ─── Data-source badge ────────────────────────────────────────────────────────
+// ─── Live status bar (above canvas) ──────────────────────────────────────────
+// Shows camera/WS connection state + uptime. Lives outside the canvas so it's
+// always readable regardless of skeleton content.
 
 function fmtUptime(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -62,72 +64,71 @@ function fmtUptime(ms: number): string {
   return `${s}s`;
 }
 
-interface DataSourceBadgeProps {
-  mode: AppMode;
-  status: ConnectionStatus;
-  exercise?: ExerciseId;
-  realDataReady: Set<ExerciseId>;
-  connectedAt: number | null;
-}
-
-function DataSourceBadge({ mode, status, exercise, realDataReady, connectedAt }: DataSourceBadgeProps) {
+function LiveStatusBar({ status, connectedAt }: { status: ConnectionStatus; connectedAt: number | null }) {
   const [, setTick] = useState(0);
-
-  // Tick every second while live + connected to update the uptime display
   useEffect(() => {
-    if (mode !== "live" || status !== "connected") return;
+    if (status !== "connected") return;
     const id = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(id);
-  }, [mode, status]);
+  }, [status]);
 
-  let label: string;
-  let dotColor: string;
-  let textColor: string;
-  let bgColor: string;
-  let pulse = false;
+  const uptime = status === "connected" && connectedAt ? fmtUptime(Date.now() - connectedAt) : null;
 
-  if (mode === "live") {
-    switch (status) {
-      case "connected":
-        label = "LIVE"; dotColor = "bg-red-500"; textColor = "text-red-300";
-        bgColor = "bg-red-950/70 border-red-800"; pulse = true;
-        break;
-      case "reconnecting":
-        label = "RECONNECTING"; dotColor = "bg-amber-400"; textColor = "text-amber-300";
-        bgColor = "bg-amber-950/70 border-amber-800"; pulse = true;
-        break;
-      default:
-        label = "DISCONNECTED"; dotColor = "bg-zinc-500"; textColor = "text-zinc-400";
-        bgColor = "bg-zinc-900/70 border-zinc-700"; pulse = false;
-    }
-  } else if (mode === "simulate") {
-    label = "SIMULATED"; dotColor = "bg-violet-500"; textColor = "text-violet-300";
-    bgColor = "bg-violet-950/70 border-violet-800";
-  } else {
-    const isReal = exercise ? realDataReady.has(exercise) : false;
-    if (isReal) {
-      label = "CONVERTED"; dotColor = "bg-green-500"; textColor = "text-green-300";
-      bgColor = "bg-green-950/70 border-green-800";
-    } else {
-      label = "GENERATED"; dotColor = "bg-amber-500"; textColor = "text-amber-300";
-      bgColor = "bg-amber-950/70 border-amber-800";
-    }
+  let dot: string, text: string, bg: string, label: string, pulse = false;
+  switch (status) {
+    case "connected":
+      label = "LIVE"; dot = "bg-red-500"; text = "text-red-300";
+      bg = "bg-red-950/50 border-b border-red-900/60"; pulse = true; break;
+    case "reconnecting":
+      label = "RECONNECTING"; dot = "bg-amber-400"; text = "text-amber-300";
+      bg = "bg-amber-950/50 border-b border-amber-900/60"; pulse = true; break;
+    default:
+      label = "DISCONNECTED"; dot = "bg-zinc-600"; text = "text-zinc-500";
+      bg = "bg-zinc-900/60 border-b border-zinc-800";
   }
 
-  const uptime = mode === "live" && status === "connected" && connectedAt
-    ? fmtUptime(Date.now() - connectedAt)
-    : null;
-
   return (
-    <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-mono font-semibold tracking-widest ${bgColor} ${textColor}`}>
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor} ${pulse ? "animate-pulse" : ""}`} />
+    <div className={`shrink-0 flex items-center justify-center gap-2 py-1.5 text-xs font-mono font-semibold tracking-widest ${bg} ${text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${dot} ${pulse ? "animate-pulse" : ""}`} />
       {label}
       {uptime && (
         <>
-          <span className="opacity-40 mx-0.5">·</span>
-          <span className="opacity-80 tracking-normal font-normal">{uptime}</span>
+          <span className="opacity-30">·</span>
+          <span className="opacity-70 tracking-normal font-normal">{uptime}</span>
         </>
       )}
+    </div>
+  );
+}
+
+// ─── Skeleton canvas overlay ──────────────────────────────────────────────────
+// Shown only when a skeleton is actively being detected. In live mode this means
+// real keypoint data is flowing; in mock/sim it reflects the data source type.
+
+function SkeletonBadge({ mode, exercise, realDataReady }: {
+  mode: AppMode;
+  exercise?: ExerciseId;
+  realDataReady: Set<ExerciseId>;
+}) {
+  let dot: string, text: string, bg: string, label: string, pulse = false;
+  if (mode === "live") {
+    label = "LIVE"; dot = "bg-red-500"; text = "text-red-300";
+    bg = "bg-red-950/70 border-red-800"; pulse = true;
+  } else if (mode === "simulate") {
+    label = "SIMULATED"; dot = "bg-violet-500"; text = "text-violet-300";
+    bg = "bg-violet-950/70 border-violet-800";
+  } else {
+    const isReal = exercise ? realDataReady.has(exercise) : false;
+    label = isReal ? "CONVERTED" : "GENERATED";
+    dot = isReal ? "bg-green-500" : "bg-amber-500";
+    text = isReal ? "text-green-300" : "text-amber-300";
+    bg = isReal ? "bg-green-950/70 border-green-800" : "bg-amber-950/70 border-amber-800";
+  }
+
+  return (
+    <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-mono font-semibold tracking-widest ${bg} ${text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot} ${pulse ? "animate-pulse" : ""}`} />
+      {label}
     </div>
   );
 }
@@ -317,13 +318,18 @@ export default function HomePage() {
     if (newStatus === "connected") {
       connectedAtRef.current = now;
       setConnEvents((prev) => [...prev.slice(-49), { type: "connect", ts: now }]);
+      addMessage({ type: "ws_connected", text: "camera connected" });
     } else if (newStatus === "disconnected") {
       const duration = connectedAtRef.current ? now - connectedAtRef.current : undefined;
+      const durationStr = duration ? ` (${fmtUptime(duration)})` : "";
       connectedAtRef.current = null;
       setConnectedHost(null);
       setConnEvents((prev) => [...prev.slice(-49), { type: "disconnect", ts: now, duration }]);
+      addMessage({ type: "ws_disconnected", text: `camera disconnected${durationStr}` });
+    } else if (newStatus === "reconnecting") {
+      addMessage({ type: "ws_reconnecting", text: "reconnecting…" });
     }
-  }, []);
+  }, [addMessage]);
 
   const handleConnectedHost = useCallback((url: string) => {
     // Extract hostname from ws://host:port
@@ -492,26 +498,32 @@ export default function HomePage() {
           </div>
         </aside>
 
-        {/* CENTER: Canvas */}
-        <div className="flex-1 min-h-0 p-2 md:p-4 flex items-center justify-center overflow-hidden relative">
-          {/* Data-source badge + live uptime ─ top-centre overlay */}
-          <DataSourceBadge
-            mode={mode}
-            status={status}
-            exercise={isMock ? exercise : undefined}
-            realDataReady={realDataReady}
-            connectedAt={connectedAtRef.current}
-          />
-          <div className="w-full h-full">
-            <SkeletonCanvas
-              wsUrls={wsUrls}
-              mockMode={!isLive}
-              getMockFrame={getMockFrame}
-              onFrame={handleFrame}
-              onConnectionChange={isLive ? handleStatusChange : undefined}
-              onConnectedHost={isLive ? handleConnectedHost : undefined}
-              controlledFrame={isSim ? simFrame : null}
-            />
+        {/* CENTER: Status bar + Canvas */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Camera reporting status — above the canvas, always readable */}
+          {isLive && <LiveStatusBar status={status} connectedAt={connectedAtRef.current} />}
+
+          {/* Canvas */}
+          <div className="flex-1 min-h-0 p-2 md:p-4 flex items-center justify-center overflow-hidden relative">
+            {/* Skeleton badge — only shown when a skeleton is actively detected */}
+            {(isMock || isSim || (isLive && frame)) && (
+              <SkeletonBadge
+                mode={mode}
+                exercise={isMock ? exercise : undefined}
+                realDataReady={realDataReady}
+              />
+            )}
+            <div className="w-full h-full">
+              <SkeletonCanvas
+                wsUrls={wsUrls}
+                mockMode={!isLive}
+                getMockFrame={getMockFrame}
+                onFrame={handleFrame}
+                onConnectionChange={isLive ? handleStatusChange : undefined}
+                onConnectedHost={isLive ? handleConnectedHost : undefined}
+                controlledFrame={isSim ? simFrame : null}
+              />
+            </div>
           </div>
         </div>
 
