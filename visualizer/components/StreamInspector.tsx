@@ -55,12 +55,15 @@ function CameraThumb({ snapshotUrls, status }: CameraThumbProps) {
         </div>
       )}
 
-      {/* Image — always rendered so browser always attempts the load */}
+      {/* Image — always rendered so browser always attempts the load.
+          Desaturated + dimmed when not connected to signal the frame may be stale. */}
       <img
         key="pi-snapshot"
         src={src}
         alt="Pi camera"
-        className="absolute inset-0 w-full h-full object-cover"
+        className={`absolute inset-0 w-full h-full object-cover transition-[filter,opacity] duration-500 ${
+          status === "connected" ? "" : "grayscale opacity-40"
+        }`}
         onLoad={() => setHasImage(true)}
         onError={() => setHasImage(false)}
       />
