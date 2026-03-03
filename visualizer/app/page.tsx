@@ -53,14 +53,33 @@ function makeId(): string {
 
 // ─── Data-source badge ────────────────────────────────────────────────────────
 
+function fmtUptime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}h ${m % 60}m`;
+  if (m > 0) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
 interface DataSourceBadgeProps {
   mode: AppMode;
   status: ConnectionStatus;
   exercise?: ExerciseId;
   realDataReady: Set<ExerciseId>;
+  connectedAt: number | null;
 }
 
-function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBadgeProps) {
+function DataSourceBadge({ mode, status, exercise, realDataReady, connectedAt }: DataSourceBadgeProps) {
+  const [, setTick] = useState(0);
+
+  // Tick every second while live + connected to update the uptime display
+  useEffect(() => {
+    if (mode !== "live" || status !== "connected") return;
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [mode, status]);
+
   let label: string;
   let dotColor: string;
   let textColor: string;
@@ -85,7 +104,6 @@ function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBa
     label = "SIMULATED"; dotColor = "bg-violet-500"; textColor = "text-violet-300";
     bgColor = "bg-violet-950/70 border-violet-800";
   } else {
-    // mock mode
     const isReal = exercise ? realDataReady.has(exercise) : false;
     if (isReal) {
       label = "CONVERTED"; dotColor = "bg-green-500"; textColor = "text-green-300";
@@ -96,10 +114,20 @@ function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBa
     }
   }
 
+  const uptime = mode === "live" && status === "connected" && connectedAt
+    ? fmtUptime(Date.now() - connectedAt)
+    : null;
+
   return (
     <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-mono font-semibold tracking-widest ${bgColor} ${textColor}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor} ${pulse ? "animate-pulse" : ""}`} />
       {label}
+      {uptime && (
+        <>
+          <span className="opacity-40 mx-0.5">·</span>
+          <span className="opacity-80 tracking-normal font-normal">{uptime}</span>
+        </>
+      )}
     </div>
   );
 }
@@ -466,12 +494,13 @@ export default function HomePage() {
 
         {/* CENTER: Canvas */}
         <div className="flex-1 min-h-0 p-2 md:p-4 flex items-center justify-center overflow-hidden relative">
-          {/* Data-source badge ─ top-centre overlay */}
+          {/* Data-source badge + live uptime ─ top-centre overlay */}
           <DataSourceBadge
             mode={mode}
             status={status}
             exercise={isMock ? exercise : undefined}
             realDataReady={realDataReady}
+            connectedAt={connectedAtRef.current}
           />
           <div className="w-full h-full">
             <SkeletonCanvas
