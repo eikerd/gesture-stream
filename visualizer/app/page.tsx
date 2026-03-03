@@ -36,10 +36,11 @@ function applyTurntable(frame: PoseFrame): PoseFrame {
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 type AppMode = "mock" | "simulate" | "live";
 
-// Candidate WebSocket hosts tried in parallel when in Live mode.
-// First to respond wins. Add mDNS names as fallbacks.
+// Candidate hosts tried in parallel when in Live mode.
+// First WebSocket to open wins; snapshot thumbnail tries each independently.
 const CANDIDATE_HOSTS = ["192.168.42.230", "pi-zero-ai.local", "raspberrypi.local"];
 const CANDIDATE_WS_URLS = CANDIDATE_HOSTS.map((h) => `ws://${h}:8765`);
+const CANDIDATE_SNAPSHOT_URLS = CANDIDATE_HOSTS.map((h) => `http://${h}:8766/snapshot`);
 
 const CHAT_WIDTH_MIN = 120;
 const CHAT_WIDTH_MAX = 560;
@@ -112,8 +113,6 @@ export default function HomePage() {
   // Extra host the user can manually specify via the Connect form; prepended to candidates
   const [extraHost, setExtraHost] = useState("");
   const [extraHostInput, setExtraHostInput] = useState("");
-  // Which host actually connected (set by onConnectionChange)
-  const [connectedHost, setConnectedHost] = useState("");
   const [fps, setFps] = useState(0);
   const [latencyMs, setLatencyMs] = useState(0);
   const [frame, setFrame] = useState<PoseFrame | null>(null);
@@ -281,16 +280,10 @@ export default function HomePage() {
     return [...extra, ...CANDIDATE_WS_URLS].filter((u, i, a) => a.indexOf(u) === i);
   }, [extraHost]);
 
-  const snapshotUrl = connectedHost ? `http://${connectedHost}:8766/snapshot` : "";
-
-  const handleConnectionChange = useCallback((newStatus: ConnectionStatus, url?: string) => {
-    setStatus(newStatus);
-    if (newStatus === "connected" && url) {
-      try { setConnectedHost(new URL(url).hostname); } catch { /* ignore */ }
-    } else if (newStatus !== "connected") {
-      setConnectedHost("");
-    }
-  }, []);
+  const snapshotUrls = useMemo(() => {
+    const extra = extraHost ? [`http://${extraHost}:8766/snapshot`] : [];
+    return [...extra, ...CANDIDATE_SNAPSHOT_URLS].filter((u, i, a) => a.indexOf(u) === i);
+  }, [extraHost]);
 
   const isMock = mode === "mock";
   const isLive = mode === "live";
@@ -315,7 +308,7 @@ export default function HomePage() {
             setFps(0);
             setLatencyMs(0);
             clearMessages();
-            if (next !== "live") { setStatus("connected"); setConnectedHost(""); }
+            if (next !== "live") setStatus("connected");
             if (next !== "mock") { setAutoCycle(false); setTurntable(false); }
           }}
         >
@@ -392,7 +385,7 @@ export default function HomePage() {
               value={extraHostInput}
               onChange={(e) => setExtraHostInput(e.target.value)}
               className="h-7 w-44 text-xs font-mono bg-zinc-800 border-zinc-700 text-zinc-100"
-              placeholder={connectedHost || "auto-discovering…"}
+              placeholder="auto-discovering…"
             />
             <span className="text-xs text-zinc-500 font-mono">:8765</span>
             <Button type="submit" size="sm" variant="secondary" className="h-7 text-xs">
@@ -434,7 +427,7 @@ export default function HomePage() {
                 latencyMs={latencyMs}
                 frame={frame}
                 exercise={activeExercise}
-                snapshotUrl={isLive ? (snapshotUrl || "") : undefined}
+                snapshotUrls={isLive ? snapshotUrls : undefined}
               />
             )}
           </div>
@@ -455,7 +448,7 @@ export default function HomePage() {
               mockMode={!isLive}
               getMockFrame={getMockFrame}
               onFrame={handleFrame}
-              onConnectionChange={isLive ? handleConnectionChange : undefined}
+              onConnectionChange={isLive ? setStatus : undefined}
               controlledFrame={isSim ? simFrame : null}
             />
           </div>

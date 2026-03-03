@@ -41,8 +41,7 @@ interface SkeletonCanvasProps {
   mockMode: boolean;
   getMockFrame: () => PoseFrame;
   onFrame: (frame: PoseFrame, fps: number, latencyMs: number) => void;
-  /** Called with status and, on connect, the winning URL. */
-  onConnectionChange?: (status: WsStatus, url?: string) => void;
+  onConnectionChange?: (status: WsStatus) => void;
   /** When provided, skips internal loops and just renders this frame directly. */
   controlledFrame?: PoseFrame | null;
 }
@@ -230,7 +229,7 @@ export function SkeletonCanvas({
             for (const s of sockets) {
               if (s !== ws && s.readyState < WebSocket.CLOSING) s.close();
             }
-            onConnectionChange?.("connected", url);
+            onConnectionChange?.("connected");
 
             ws.onmessage = (event) => {
               try {

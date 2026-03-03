@@ -7,30 +7,35 @@ import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 // ─── Camera thumbnail ─────────────────────────────────────────────────────────
-// Always renders in Live mode. Shows a live JPEG from the Pi's snapshot server
-// (polled every 3 s), a "searching" pulsing state while connecting, or a
-// broken-camera placeholder when the server is reachable but returns no image.
+// Tries all candidate snapshot URLs independently (no dependency on WS state).
+// Cycles through candidates on error; polls the working one every 3 s.
 
 interface CameraThumbProps {
-  snapshotUrl: string;
+  /** Ordered list of snapshot URLs to try. First to respond with a valid image wins. */
+  snapshotUrls: string[];
   status: ConnectionStatus;
 }
 
-function CameraThumb({ snapshotUrl, status }: CameraThumbProps) {
+function CameraThumb({ snapshotUrls, status }: CameraThumbProps) {
+  const [activeIdx, setActiveIdx] = useState(0);
   const [src, setSrc] = useState("");
   const [imgOk, setImgOk] = useState(false);
 
+  // Start polling immediately using the first candidate
   useEffect(() => {
-    setSrc("");
-    setImgOk(false);
-    if (!snapshotUrl) return;
-    const refresh = () => {
-      setSrc(`${snapshotUrl}?t=${Date.now()}`);
-    };
+    if (snapshotUrls.length === 0) return;
+    const url = snapshotUrls[activeIdx % snapshotUrls.length];
+    const refresh = () => setSrc(`${url}?t=${Date.now()}`);
     refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
-  }, [snapshotUrl]);
+  }, [snapshotUrls, activeIdx]);
+
+  const handleError = () => {
+    setImgOk(false);
+    // Try the next candidate on failure
+    setActiveIdx((i) => i + 1);
+  };
 
   const searching = status === "reconnecting" || status === "disconnected";
 
@@ -46,7 +51,7 @@ function CameraThumb({ snapshotUrl, status }: CameraThumbProps) {
           alt="Pi camera"
           className={`w-full h-full object-cover absolute inset-0 transition-opacity duration-500 ${imgOk ? "opacity-100" : "opacity-0"}`}
           onLoad={() => setImgOk(true)}
-          onError={() => setImgOk(false)}
+          onError={handleError}
         />
       )}
 
@@ -95,8 +100,8 @@ interface StreamInspectorProps {
   latencyMs: number;
   frame: PoseFrame | null;
   exercise?: string;
-  /** When provided, the camera thumbnail is shown. */
-  snapshotUrl?: string;
+  /** When provided, the camera thumbnail is shown (tries each URL in order). */
+  snapshotUrls?: string[];
 }
 
 // Which keypoints matter most per exercise (used for highlighting)
@@ -158,7 +163,7 @@ export function StreamInspector({
   latencyMs,
   frame,
   exercise,
-  snapshotUrl,
+  snapshotUrls,
 }: StreamInspectorProps) {
   const keySet = exercise ? (KEY_KEYPOINTS[exercise] ?? null) : null;
 
@@ -170,7 +175,9 @@ export function StreamInspector({
           <CardTitle className="text-sm text-zinc-400">Connection</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          {snapshotUrl !== undefined && <CameraThumb snapshotUrl={snapshotUrl} status={status} />}
+          {snapshotUrls && snapshotUrls.length > 0 && (
+            <CameraThumb snapshotUrls={snapshotUrls} status={status} />
+          )}
           <Badge variant={STATUS_VARIANT[status]} className="w-fit">
             {STATUS_LABEL[status]}
           </Badge>
