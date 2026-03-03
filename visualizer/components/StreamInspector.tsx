@@ -17,7 +17,6 @@ interface CameraThumbProps {
 }
 
 function CameraThumb({ snapshotUrls, status }: CameraThumbProps) {
-  const [urlIdx, setUrlIdx] = useState(0);
   const [tick, setTick] = useState(0);
   const [hasImage, setHasImage] = useState(false);
 
@@ -29,8 +28,9 @@ function CameraThumb({ snapshotUrls, status }: CameraThumbProps) {
 
   if (snapshotUrls.length === 0) return null;
 
-  const url = snapshotUrls[urlIdx % snapshotUrls.length];
-  const src = `${url}?t=${tick}`;
+  // Route through the Next.js proxy — browser never needs a direct route to
+  // the Pi. The server-side /api/snapshot handler tries all candidate hosts.
+  const src = `/api/snapshot?t=${tick}`;
   const searching = status !== "connected" && !hasImage;
 
   return (
@@ -56,12 +56,12 @@ function CameraThumb({ snapshotUrls, status }: CameraThumbProps) {
 
       {/* Image — always rendered so browser always attempts the load */}
       <img
-        key={url}
+        key="pi-snapshot"
         src={src}
         alt="Pi camera"
         className="absolute inset-0 w-full h-full object-cover"
         onLoad={() => setHasImage(true)}
-        onError={() => { setHasImage(false); setUrlIdx((i) => i + 1); }}
+        onError={() => setHasImage(false)}
       />
 
       <span className="absolute bottom-1 right-1.5 text-zinc-600 text-[10px] font-mono leading-none z-10">
