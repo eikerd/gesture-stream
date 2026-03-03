@@ -6,37 +6,81 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-// ─── Camera thumbnail (live mode only) ───────────────────────────────────────
+// ─── Camera thumbnail ─────────────────────────────────────────────────────────
+// Always renders in Live mode. Shows a live JPEG from the Pi's snapshot server
+// (polled every 3 s), a "searching" pulsing state while connecting, or a
+// broken-camera placeholder when the server is reachable but returns no image.
 
-function CameraThumb({ snapshotUrl }: { snapshotUrl: string }) {
+interface CameraThumbProps {
+  snapshotUrl: string;
+  status: ConnectionStatus;
+}
+
+function CameraThumb({ snapshotUrl, status }: CameraThumbProps) {
   const [src, setSrc] = useState("");
-  const [ok, setOk] = useState(true);
+  const [imgOk, setImgOk] = useState(false);
 
   useEffect(() => {
+    setSrc("");
+    setImgOk(false);
+    if (!snapshotUrl) return;
     const refresh = () => {
       setSrc(`${snapshotUrl}?t=${Date.now()}`);
-      setOk(true);
     };
     refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
   }, [snapshotUrl]);
 
+  const searching = status === "reconnecting" || status === "disconnected";
+
   return (
-    <div className="relative w-full rounded overflow-hidden bg-zinc-800" style={{ aspectRatio: "4/3" }}>
-      {src && ok ? (
+    <div
+      className="relative w-full rounded overflow-hidden bg-zinc-800 border border-zinc-700"
+      style={{ aspectRatio: "4/3" }}
+    >
+      {/* Actual image — hidden until loaded successfully */}
+      {src && (
         <img
           src={src}
           alt="Pi camera"
-          className="w-full h-full object-cover"
-          onError={() => setOk(false)}
+          className={`w-full h-full object-cover absolute inset-0 transition-opacity duration-500 ${imgOk ? "opacity-100" : "opacity-0"}`}
+          onLoad={() => setImgOk(true)}
+          onError={() => setImgOk(false)}
         />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center text-zinc-600 text-xs">
-          {ok ? "loading…" : "no preview"}
+      )}
+
+      {/* Placeholder shown when image is not available */}
+      {!imgOk && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+          {/* Camera icon SVG */}
+          <svg
+            viewBox="0 0 24 24"
+            className={`w-8 h-8 ${searching ? "text-zinc-500 animate-pulse" : "text-zinc-700"}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round"
+              d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"
+            />
+            <path strokeLinecap="round" strokeLinejoin="round"
+              d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z"
+            />
+            {/* X cross when disconnected */}
+            {!searching && (
+              <>
+                <line x1="4" y1="4" x2="20" y2="20" strokeWidth={1.5} strokeLinecap="round" />
+              </>
+            )}
+          </svg>
+          <span className={`text-[10px] font-mono ${searching ? "text-zinc-500 animate-pulse" : "text-zinc-600"}`}>
+            {searching ? "searching…" : "no signal"}
+          </span>
         </div>
       )}
-      <span className="absolute bottom-1 right-1.5 text-zinc-500 text-[10px] font-mono leading-none">
+
+      <span className="absolute bottom-1 right-1.5 text-zinc-600 text-[10px] font-mono leading-none z-10">
         Pi cam
       </span>
     </div>
@@ -51,6 +95,7 @@ interface StreamInspectorProps {
   latencyMs: number;
   frame: PoseFrame | null;
   exercise?: string;
+  /** When provided, the camera thumbnail is shown. */
   snapshotUrl?: string;
 }
 
@@ -125,7 +170,7 @@ export function StreamInspector({
           <CardTitle className="text-sm text-zinc-400">Connection</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          {snapshotUrl && <CameraThumb snapshotUrl={snapshotUrl} />}
+          {snapshotUrl !== undefined && <CameraThumb snapshotUrl={snapshotUrl} status={status} />}
           <Badge variant={STATUS_VARIANT[status]} className="w-fit">
             {STATUS_LABEL[status]}
           </Badge>

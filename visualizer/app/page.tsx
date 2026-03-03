@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Play, Pause, RotateCw } from "lucide-react";
 import { SkeletonCanvas } from "@/components/SkeletonCanvas";
 import { StreamInspector } from "@/components/StreamInspector";
@@ -35,6 +35,11 @@ function applyTurntable(frame: PoseFrame): PoseFrame {
 
 type ConnectionStatus = "connected" | "disconnected" | "reconnecting";
 type AppMode = "mock" | "simulate" | "live";
+
+// Candidate WebSocket hosts tried in parallel when in Live mode.
+// First to respond wins. Add mDNS names as fallbacks.
+const CANDIDATE_HOSTS = ["192.168.42.230", "pi-zero-ai.local", "raspberrypi.local"];
+const CANDIDATE_WS_URLS = CANDIDATE_HOSTS.map((h) => `ws://${h}:8765`);
 
 const CHAT_WIDTH_MIN = 120;
 const CHAT_WIDTH_MAX = 560;
@@ -99,13 +104,16 @@ function DataSourceBadge({ mode, status, exercise, realDataReady }: DataSourceBa
 }
 
 export default function HomePage() {
-  const [mode, setMode] = useState<AppMode>("mock");
+  const [mode, setMode] = useState<AppMode>("live");
   const [exercise, setExercise] = useState<ExerciseId>("squat");
   const [simExercise, setSimExercise] = useState<ExerciseId>("squat");
   const [autoCycle, setAutoCycle] = useState(false);
   const [turntable, setTurntable] = useState(false);
-  const [wsHost, setWsHost] = useState("192.168.42.230");
-  const [wsInput, setWsInput] = useState("192.168.42.230");
+  // Extra host the user can manually specify via the Connect form; prepended to candidates
+  const [extraHost, setExtraHost] = useState("");
+  const [extraHostInput, setExtraHostInput] = useState("");
+  // Which host actually connected (set by onConnectionChange)
+  const [connectedHost, setConnectedHost] = useState("");
   const [fps, setFps] = useState(0);
   const [latencyMs, setLatencyMs] = useState(0);
   const [frame, setFrame] = useState<PoseFrame | null>(null);
@@ -267,8 +275,23 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, [mode, addMessage]);
 
-  const wsUrl = `ws://${wsHost}:8765`;
-  const snapshotUrl = `http://${wsHost}:8766/snapshot`;
+  // Build ordered candidate list: user-supplied host first (if any), then defaults
+  const wsUrls = useMemo(() => {
+    const extra = extraHost ? [`ws://${extraHost}:8765`] : [];
+    return [...extra, ...CANDIDATE_WS_URLS].filter((u, i, a) => a.indexOf(u) === i);
+  }, [extraHost]);
+
+  const snapshotUrl = connectedHost ? `http://${connectedHost}:8766/snapshot` : "";
+
+  const handleConnectionChange = useCallback((newStatus: ConnectionStatus, url?: string) => {
+    setStatus(newStatus);
+    if (newStatus === "connected" && url) {
+      try { setConnectedHost(new URL(url).hostname); } catch { /* ignore */ }
+    } else if (newStatus !== "connected") {
+      setConnectedHost("");
+    }
+  }, []);
+
   const isMock = mode === "mock";
   const isLive = mode === "live";
   const isSim = mode === "simulate";
@@ -292,7 +315,7 @@ export default function HomePage() {
             setFps(0);
             setLatencyMs(0);
             clearMessages();
-            if (next !== "live") setStatus("connected");
+            if (next !== "live") { setStatus("connected"); setConnectedHost(""); }
             if (next !== "mock") { setAutoCycle(false); setTurntable(false); }
           }}
         >
@@ -361,15 +384,15 @@ export default function HomePage() {
             className="flex items-center gap-2 ml-2"
             onSubmit={(e) => {
               e.preventDefault();
-              setWsHost(wsInput);
+              setExtraHost(extraHostInput.trim());
             }}
           >
             <span className="text-xs text-zinc-500 font-mono">ws://</span>
             <Input
-              value={wsInput}
-              onChange={(e) => setWsInput(e.target.value)}
-              className="h-7 w-52 text-xs font-mono bg-zinc-800 border-zinc-700 text-zinc-100"
-              placeholder="pi-zero-ai.local"
+              value={extraHostInput}
+              onChange={(e) => setExtraHostInput(e.target.value)}
+              className="h-7 w-44 text-xs font-mono bg-zinc-800 border-zinc-700 text-zinc-100"
+              placeholder={connectedHost || "auto-discovering…"}
             />
             <span className="text-xs text-zinc-500 font-mono">:8765</span>
             <Button type="submit" size="sm" variant="secondary" className="h-7 text-xs">
@@ -411,7 +434,7 @@ export default function HomePage() {
                 latencyMs={latencyMs}
                 frame={frame}
                 exercise={activeExercise}
-                snapshotUrl={isLive ? snapshotUrl : undefined}
+                snapshotUrl={isLive ? (snapshotUrl || "") : undefined}
               />
             )}
           </div>
@@ -428,11 +451,11 @@ export default function HomePage() {
           />
           <div className="w-full h-full">
             <SkeletonCanvas
-              wsUrl={wsUrl}
+              wsUrls={wsUrls}
               mockMode={!isLive}
               getMockFrame={getMockFrame}
               onFrame={handleFrame}
-              onConnectionChange={isLive ? setStatus : undefined}
+              onConnectionChange={isLive ? handleConnectionChange : undefined}
               controlledFrame={isSim ? simFrame : null}
             />
           </div>

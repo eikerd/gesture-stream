@@ -36,17 +36,19 @@ function updateSmoothedBBox(sb: BBox | null, kps: PoseFrame["keypoints"]): BBox 
 type WsStatus = "connected" | "disconnected" | "reconnecting";
 
 interface SkeletonCanvasProps {
-  wsUrl: string;
+  /** Ordered list of WebSocket URLs to try in parallel; first to open wins. */
+  wsUrls: string[];
   mockMode: boolean;
   getMockFrame: () => PoseFrame;
   onFrame: (frame: PoseFrame, fps: number, latencyMs: number) => void;
-  onConnectionChange?: (status: WsStatus) => void;
+  /** Called with status and, on connect, the winning URL. */
+  onConnectionChange?: (status: WsStatus, url?: string) => void;
   /** When provided, skips internal loops and just renders this frame directly. */
   controlledFrame?: PoseFrame | null;
 }
 
 export function SkeletonCanvas({
-  wsUrl,
+  wsUrls,
   mockMode,
   getMockFrame,
   onFrame,
@@ -55,6 +57,7 @@ export function SkeletonCanvas({
 }: SkeletonCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const pendingSocketsRef = useRef<WebSocket[]>([]);
   const mockRafRef = useRef<number | null>(null);
   const fpsCounterRef = useRef({ frames: 0, lastTime: Date.now() });
   const currentFpsRef = useRef(0);
@@ -195,47 +198,79 @@ export function SkeletonCanvas({
     };
   }, [mockMode, controlledFrame, getMockFrame, onFrame, drawFrame, computeFps]);
 
-  // WebSocket mode
+  // WebSocket mode — tries all wsUrls in parallel; first to open wins.
   useEffect(() => {
     if (mockMode || controlledFrame != null) return;
 
-    let ws: WebSocket;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
 
     const connect = () => {
       onConnectionChange?.("reconnecting");
-      try {
-        ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
 
-        ws.onopen = () => {
-          onConnectionChange?.("connected");
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const frame: PoseFrame = JSON.parse(event.data as string);
-            const latency = Date.now() - frame.ts * 1000;
-            const fps = computeFps();
-            if (canvasRef.current) drawFrame(canvasRef.current, frame);
-            onFrame(frame, fps, latency);
-          } catch {
-            // ignore parse errors
-          }
-        };
-
-        ws.onerror = () => {
-          ws.close();
-        };
-
-        ws.onclose = () => {
-          wsRef.current = null;
-          onConnectionChange?.("disconnected");
-          reconnectTimeout = setTimeout(connect, 3000);
-        };
-      } catch {
+      if (wsUrls.length === 0) {
         onConnectionChange?.("disconnected");
-        reconnectTimeout = setTimeout(connect, 3000);
+        return;
+      }
+
+      let winnerFound = false;
+      let closedCount = 0;
+      const sockets: WebSocket[] = [];
+      pendingSocketsRef.current = sockets;
+
+      for (const url of wsUrls) {
+        try {
+          const ws = new WebSocket(url);
+          sockets.push(ws);
+
+          ws.onopen = () => {
+            if (winnerFound) { ws.close(); return; }
+            winnerFound = true;
+            wsRef.current = ws;
+            // Close all losing sockets
+            for (const s of sockets) {
+              if (s !== ws && s.readyState < WebSocket.CLOSING) s.close();
+            }
+            onConnectionChange?.("connected", url);
+
+            ws.onmessage = (event) => {
+              try {
+                const frame: PoseFrame = JSON.parse(event.data as string);
+                const latency = Date.now() - frame.ts * 1000;
+                const fps = computeFps();
+                if (canvasRef.current) drawFrame(canvasRef.current, frame);
+                onFrame(frame, fps, latency);
+              } catch { /* ignore parse errors */ }
+            };
+
+            ws.onerror = () => { ws.close(); };
+
+            ws.onclose = () => {
+              wsRef.current = null;
+              onConnectionChange?.("disconnected");
+              reconnectTimeout = setTimeout(connect, 3000);
+            };
+          };
+
+          ws.onerror = () => { ws.close(); };
+
+          // Non-winner close: count failures; retry when all have closed
+          ws.onclose = () => {
+            if (!winnerFound) {
+              closedCount++;
+              if (closedCount === wsUrls.length) {
+                onConnectionChange?.("disconnected");
+                reconnectTimeout = setTimeout(connect, 3000);
+              }
+            }
+          };
+        } catch {
+          // Constructor threw (e.g. bad URL) — count as a failure
+          closedCount++;
+          if (closedCount === wsUrls.length && !winnerFound) {
+            onConnectionChange?.("disconnected");
+            reconnectTimeout = setTimeout(connect, 3000);
+          }
+        }
       }
     };
 
@@ -245,8 +280,12 @@ export function SkeletonCanvas({
       clearTimeout(reconnectTimeout);
       wsRef.current?.close();
       wsRef.current = null;
+      for (const s of pendingSocketsRef.current) {
+        if (s.readyState < WebSocket.CLOSING) s.close();
+      }
+      pendingSocketsRef.current = [];
     };
-  }, [mockMode, controlledFrame, wsUrl, drawFrame, onFrame, computeFps, onConnectionChange]);
+  }, [mockMode, controlledFrame, wsUrls, drawFrame, onFrame, computeFps, onConnectionChange]);
 
   return (
     <canvas
