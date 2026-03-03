@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -25,7 +26,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Optional
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+try:
+    from websockets.asyncio.server import ServerConnection as WsConn
+except ImportError:
+    from websockets.server import WebSocketServerProtocol as WsConn  # type: ignore[attr-defined]
 
 from config import Config
 
@@ -291,6 +295,66 @@ def _build_mqtt_client(cfg: Config):
 
 
 # ---------------------------------------------------------------------------
+# Camera watchdog (runs on a daemon thread)
+# ---------------------------------------------------------------------------
+
+class CameraWatchdog:
+    """Kills the process if no frame is produced within *timeout* seconds.
+
+    The picamera2 library has a known V4L2 polling deadlock where
+    ``capture_metadata()`` blocks forever after long continuous runs.
+    A hard SIGTERM + systemd restart is the only reliable recovery.
+
+    Usage::
+
+        watchdog = CameraWatchdog(timeout=30)
+        # ... set up camera ...
+        watchdog.start()          # only after successful camera init
+        while True:
+            metadata = picam2.capture_metadata()
+            watchdog.ping()       # reset the timer on every live frame
+
+    Args:
+        timeout: Seconds without a frame before the process is killed.
+    """
+
+    def __init__(self, timeout: float = 30) -> None:
+        self._timeout = timeout
+        self._last_frame = time.monotonic()
+        self._lock = threading.Lock()
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="camera-watchdog")
+
+    def start(self) -> None:
+        """Start the watchdog timer. Call AFTER the camera is confirmed working."""
+        with self._lock:
+            self._last_frame = time.monotonic()
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Disable the watchdog (call on clean shutdown)."""
+        self._stop = True
+
+    def ping(self) -> None:
+        """Reset the inactivity timer. Call after each successfully captured frame."""
+        with self._lock:
+            self._last_frame = time.monotonic()
+
+    def _run(self) -> None:
+        while not self._stop:
+            time.sleep(5)
+            with self._lock:
+                elapsed = time.monotonic() - self._last_frame
+            if elapsed > self._timeout:
+                log.error(
+                    "Watchdog: no frame produced for %.0f s — sending SIGTERM for systemd restart",
+                    elapsed,
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+
+# ---------------------------------------------------------------------------
 # Frame producer (sync, runs in executor)
 # ---------------------------------------------------------------------------
 
@@ -325,6 +389,10 @@ class PoseProducer:
 
         log.info("Pose producer started (model: %s)", getattr(imx500, "network_name", "unknown"))
 
+        # Start the watchdog now — camera is confirmed live.
+        watchdog = CameraWatchdog(timeout=30)
+        watchdog.start()
+
         import cv2
         frame_count = 0
         # Capture thumbnail every ~3 s (45 frames at 15 fps)
@@ -332,7 +400,12 @@ class PoseProducer:
 
         try:
             while not self._stop:
-                metadata = picam2.capture_metadata()
+                try:
+                    metadata = picam2.capture_metadata()
+                except Exception as exc:
+                    log.warning("capture_metadata error: %s — retrying in 1 s", exc)
+                    time.sleep(1)
+                    continue
                 ts = time.time()
 
                 # Throttled thumbnail capture
@@ -374,7 +447,9 @@ class PoseProducer:
                 asyncio.run_coroutine_threadsafe(
                     self._put(payload), self.loop
                 )
+                watchdog.ping()
         finally:
+            watchdog.stop()
             picam2.stop()
             log.info("Camera stopped")
 
@@ -399,10 +474,10 @@ class PoseServer:
     def __init__(self, cfg: Config, mqtt_client: Any = None) -> None:
         self.cfg = cfg
         self.mqtt_client = mqtt_client
-        self._clients: set[WebSocketServerProtocol] = set()
+        self._clients: set[WsConn] = set()
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=4)
 
-    async def _handler(self, websocket: WebSocketServerProtocol) -> None:
+    async def _handler(self, websocket: WsConn) -> None:
         """Handle a new WebSocket connection.
 
         Args:
@@ -434,7 +509,7 @@ class PoseServer:
                 continue
 
             # Broadcast to all clients; remove any that have disconnected
-            dead: set[WebSocketServerProtocol] = set()
+            dead: set[WsConn] = set()
             for ws in list(self._clients):
                 try:
                     await ws.send(payload)
@@ -469,10 +544,14 @@ class PoseServer:
                 self._handler,
                 "0.0.0.0",
                 self.cfg.WS_PORT,
-                # Detect stale USB-gadget connections quickly.
-                # Default ping_interval/timeout (20 s each) is too slow for USB drops.
-                ping_interval=5,   # send a ping every 5 s
-                ping_timeout=10,   # drop if no pong within 10 s
+                # Detect stale connections quickly (default 20 s is too slow).
+                ping_interval=5,    # send a ping every 5 s
+                ping_timeout=10,    # drop client if no pong within 10 s
+                # Disable per-message deflate: saves ~50 KB per connection on 512 MB RAM
+                # and avoids CPU overhead on the Pi Zero 2W.
+                compression=None,
+                # Pose frames are small JSON (~800 B); cap message size for safety.
+                max_size=64_000,
             ):
                 await asyncio.gather(executor_future, broadcaster_task)
         except asyncio.CancelledError:

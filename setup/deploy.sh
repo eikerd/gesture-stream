@@ -35,14 +35,17 @@ cat > /tmp/pose-publisher.service << 'UNIT'
 [Unit]
 Description=IMX500 Pose Publisher
 After=network.target
+# Disable restart rate-limiting so the service always recovers after a crash.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=${REMOTE_USER}
 WorkingDirectory=${DEPLOY_DIR}
 ExecStart=/usr/bin/python3 ${DEPLOY_DIR}/main.py
-Restart=on-failure
-RestartSec=5
+# Restart unconditionally (including clean exits triggered by the CameraWatchdog).
+Restart=always
+RestartSec=10
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
