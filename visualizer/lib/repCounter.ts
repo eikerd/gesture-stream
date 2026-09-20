@@ -30,9 +30,23 @@ export function angle(a: Point2D, b: Point2D, c: Point2D): number {
   return (Math.acos(cosTheta) * 180) / Math.PI;
 }
 
-function kp(frame: PoseFrame, name: (typeof COCO_KEYPOINT_NAMES)[number]): Point2D {
+/** The lowest confidence a keypoint can carry and still be used for geometry.
+ *  Below this the tracker is guessing, and a guessed joint makes a real angle. */
+const MIN_KEYPOINT_SCORE = 0.3;
+
+/** A keypoint, or null when it is absent or too uncertain to trust.
+ *
+ *  This used to fall back to the frame's centre, {x:0.5, y:0.5}. That invented a
+ *  joint: on a noisy live frame the synthetic point produced a plausible angle,
+ *  which crossed the phase thresholds and counted reps nobody performed. A frame
+ *  missing a joint now counts for nothing instead. */
+function kp(
+  frame: PoseFrame,
+  name: (typeof COCO_KEYPOINT_NAMES)[number]
+): Point2D | null {
   const found = frame.keypoints.find((k) => k.name === name);
-  return found ?? { x: 0.5, y: 0.5 };
+  if (!found || found.score < MIN_KEYPOINT_SCORE) return null;
+  return { x: found.x, y: found.y };
 }
 
 // ─── Abstract base class ──────────────────────────────────────────────────────
@@ -81,6 +95,8 @@ export class SquatCounter extends ExerciseRepCounter {
     const hip = kp(frame, "left_hip");
     const knee = kp(frame, "left_knee");
     const ankle = kp(frame, "left_ankle");
+    // A frame that cannot see the joint cannot judge the rep.
+    if (!hip || !knee || !ankle) return null;
     const a = angle(hip, knee, ankle);
     this.currentAngle = a;
 
@@ -120,6 +136,7 @@ export class PushUpCounter extends ExerciseRepCounter {
     const shoulder = kp(frame, "left_shoulder");
     const elbow = kp(frame, "left_elbow");
     const wrist = kp(frame, "left_wrist");
+    if (!shoulder || !elbow || !wrist) return null;
     const a = angle(shoulder, elbow, wrist);
     this.currentAngle = a;
 
@@ -158,6 +175,8 @@ export class LungeCounter extends ExerciseRepCounter {
     const hip = kp(frame, "left_hip");
     const knee = kp(frame, "left_knee");
     const ankle = kp(frame, "left_ankle");
+    // A frame that cannot see the joint cannot judge the rep.
+    if (!hip || !knee || !ankle) return null;
     const a = angle(hip, knee, ankle);
     this.currentAngle = a;
 
@@ -194,6 +213,7 @@ export class HighKneesCounter extends ExerciseRepCounter {
   update(frame: PoseFrame): RepEvent | null {
     const hip = kp(frame, "left_hip");
     const knee = kp(frame, "left_knee");
+    if (!hip || !knee) return null;
 
     // Lift = how far knee is above hip (positive = above hip)
     const lift = hip.y - knee.y;
@@ -252,6 +272,7 @@ export class JumpingJackCounter extends ExerciseRepCounter {
     const elbow = kp(frame, "left_elbow");
     const shoulder = kp(frame, "left_shoulder");
     const hip = kp(frame, "left_hip");
+    if (!elbow || !shoulder || !hip) return null;
     const a = angle(elbow, shoulder, hip);
     this.currentAngle = a;
 

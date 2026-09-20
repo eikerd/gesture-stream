@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type CoachRepSummary } from "@/lib/chatTypes";
+import { clientKey, consume } from "@/lib/rateLimit";
 
 const COACH_MODEL =
   process.env.ANTHROPIC_COACH_MODEL ?? "claude-haiku-4-5-20251001";
@@ -82,6 +83,19 @@ export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ tip: getStaticTip(exercise) });
+  }
+
+  // This route turns straight into model spend, and nothing about it is
+  // authenticated, so cap it per caller before the SDK is even loaded. Over the
+  // cap the answer is still a tip — the coach keeps working, it just stops
+  // costing anything — and the status says why for anyone watching.
+  const limit = consume(clientKey(request.headers));
+  if (!limit.ok) {
+    console.warn(`[/api/coach] rate limit hit (${limit.scope}) for ${clientKey(request.headers)}`);
+    return NextResponse.json(
+      { tip: getStaticTip(exercise), rateLimited: true },
+      { status: 429, headers: { "Retry-After": limit.scope === "minute" ? "60" : "3600" } }
+    );
   }
 
   try {
