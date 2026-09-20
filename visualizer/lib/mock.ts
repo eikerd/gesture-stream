@@ -1,4 +1,5 @@
 import { type PoseFrame, COCO_KEYPOINT_NAMES } from "./pose";
+import { createReplay } from "./mediapipe";
 
 // ─── Exercise registry ────────────────────────────────────────────────────────
 
@@ -37,276 +38,508 @@ export const SEVEN_MINUTE_EXERCISES: Exercise[] = [
   { id: "side-plank",       label: "Side Plank",           order: 12 },
 ];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Motion utilities ─────────────────────────────────────────────────────────
 
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+/** Cubic ease-in-out (smoothstep). Input must be [0,1]. */
+const smoothstep = (x: number): number => {
+  const u = Math.max(0, Math.min(1, x));
+  return u * u * (3 - 2 * u);
+};
 
-/** Smooth 0→1→0 pulse at given Hz */
-const pulse = (t: number, hz: number) => (1 - Math.cos(2 * Math.PI * t * hz)) / 2;
+/** Symmetric 0→1→0 rep driver, eased. One full cycle per 1/hz seconds. */
+function repPhase(t: number, hz: number, phaseOffset = 0): number {
+  const p = ((t * hz + phaseOffset) % 1 + 1) % 1; // [0,1)
+  // Remap: spend 45% descending, 10% at bottom, 45% ascending
+  if (p < 0.45) return smoothstep(p / 0.45);
+  if (p < 0.55) return 1;
+  return smoothstep(1 - (p - 0.55) / 0.45);
+}
 
-/** Smooth -1→1 sine at given Hz */
-const osc = (t: number, hz: number, phase = 0) => Math.sin(2 * Math.PI * t * hz + phase);
+/** Slow breathing oscillation (~0.2 Hz), returns y-offset. */
+const breathe = (t: number): number => 0.004 * Math.sin(2 * Math.PI * 0.2 * t);
 
-/** Head cluster around (cx, cy), facing forward */
-function head(cx: number, cy: number): [number, number][] {
-  return [
-    [cx,        cy],        // nose
-    [cx - 0.03, cy - 0.02], // left_eye
-    [cx + 0.03, cy - 0.02], // right_eye
-    [cx - 0.06, cy - 0.01], // left_ear
-    [cx + 0.06, cy - 0.01], // right_ear
+/**
+ * Pseudo-natural noise from summed incommensurable sines.
+ * seed keeps different keypoints independent; amp ~0.002–0.004 is realistic.
+ */
+function jitter(t: number, seed: number, amp = 0.003): number {
+  return amp * (
+    Math.sin(t * 17.31 + seed) * 0.50 +
+    Math.sin(t * 43.70 + seed * 1.3) * 0.30 +
+    Math.sin(t * 97.20 + seed * 2.1) * 0.15 +
+    Math.sin(t * 153.9 + seed * 0.7) * 0.05
+  );
+}
+
+/** Linear interpolation */
+const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
+
+// ─── Canonical neutral skeleton (17 COCO keypoints) ───────────────────────────
+//
+// Front-facing upright standing pose. All coordinates normalised 0→1.
+// x: 0=left-of-frame, 1=right; y: 0=top, 1=bottom.
+// Limb lengths are fixed here and preserved via keyframe blending.
+//
+// Measured proportions (per 1.7m adult, scaled to ~0.82 canvas height):
+//   SHIN = THIGH ≈ 0.19   TORSO ≈ 0.26   UPPER_ARM ≈ 0.14   FOREARM ≈ 0.12
+//
+const STAND: [number,number][] = [
+  [0.500, 0.085], // 0  nose
+  [0.473, 0.072], // 1  left_eye
+  [0.527, 0.072], // 2  right_eye
+  [0.447, 0.078], // 3  left_ear
+  [0.553, 0.078], // 4  right_ear
+  [0.406, 0.235], // 5  left_shoulder
+  [0.594, 0.235], // 6  right_shoulder
+  [0.357, 0.375], // 7  left_elbow
+  [0.643, 0.375], // 8  right_elbow
+  [0.344, 0.505], // 9  left_wrist
+  [0.656, 0.505], // 10 right_wrist
+  [0.428, 0.510], // 11 left_hip
+  [0.572, 0.510], // 12 right_hip
+  [0.422, 0.690], // 13 left_knee
+  [0.578, 0.690], // 14 right_knee
+  [0.414, 0.878], // 15 left_ankle
+  [0.586, 0.878], // 16 right_ankle
+];
+
+/** Blend two 17-kp poses elementwise by factor u ∈ [0,1]. */
+function blend(
+  a: [number,number][],
+  b: [number,number][],
+  u: number
+): [number,number][] {
+  return a.map(([ax,ay], i) => [
+    lerp(ax, b[i][0], u),
+    lerp(ay, b[i][1], u),
+  ]) as [number,number][];
+}
+
+/** Add per-keypoint noise + breathing to a pose array. */
+function addMotion(
+  pts: [number,number][],
+  t: number,
+  noiseAmp = 0.003,
+  breatheScale = 1.0
+): [number,number][] {
+  const by = breathe(t) * breatheScale;
+  return pts.map(([x, y], i) => [
+    x + jitter(t, i * 7.41, noiseAmp),
+    y + jitter(t, i * 3.17 + 100, noiseAmp) + by,
+  ]) as [number,number][];
+}
+
+// ─── Exercise key poses ───────────────────────────────────────────────────────
+// Biometrically grounded positions from Zengin thresholds.
+// Each generator returns a [number,number][] of 17 COCO keypoints.
+
+/** 1. Jumping Jacks  — arms overhead + legs spread (Zengin: 1.3 Hz) */
+function jumpingJacks(t: number): [number,number][] {
+  const OPEN: [number,number][] = [
+    [0.500, 0.080], // nose (slight jump)
+    [0.473, 0.067],
+    [0.527, 0.067],
+    [0.447, 0.073],
+    [0.553, 0.073],
+    [0.380, 0.200], // shoulders rise slightly
+    [0.620, 0.200],
+    [0.265, 0.115], // elbows high & wide (≥150° arm angle)
+    [0.735, 0.115],
+    [0.210, 0.065], // wrists fully overhead
+    [0.790, 0.065],
+    [0.428, 0.500], // hips — no vertical change
+    [0.572, 0.500],
+    [0.370, 0.693], // knees spread wide
+    [0.630, 0.693],
+    [0.308, 0.873], // ankles spread
+    [0.692, 0.873],
   ];
+  const u = repPhase(t, 1.3);
+  return addMotion(blend(STAND, OPEN, u), t, 0.003, 0.6);
 }
 
-type KP17 = [[number,number],[number,number],[number,number],[number,number],[number,number],
-             [number,number],[number,number],[number,number],[number,number],[number,number],
-             [number,number],[number,number],[number,number],[number,number],[number,number],
-             [number,number],[number,number]];
-
-// ─── Exercise generators ──────────────────────────────────────────────────────
-// Each returns 17 [x, y] pairs in COCO keypoint order.
-// Coordinates: x=0 left, x=1 right; y=0 top, y=1 bottom.
-
-/** 1. Jumping Jacks — arms sweep up/down, legs spread/together */
-function jumpingJacks(t: number): [number, number][] {
-  const u = pulse(t, 1.3);
-  const lElbX = lerp(0.35, 0.20, u), lElbY = lerp(0.42, 0.18, u);
-  const rElbX = lerp(0.65, 0.80, u), rElbY = lerp(0.42, 0.18, u);
-  const lWrX  = lerp(0.30, 0.14, u), lWrY  = lerp(0.56, 0.08, u);
-  const rWrX  = lerp(0.70, 0.86, u), rWrY  = lerp(0.56, 0.08, u);
-  const lKnX  = lerp(0.44, 0.36, u);
-  const rKnX  = lerp(0.56, 0.64, u);
-  const lAnX  = lerp(0.44, 0.28, u);
-  const rAnX  = lerp(0.56, 0.72, u);
-  const bobY  = -0.015 * u; // slight upward bounce
-  return [
-    ...head(0.5, 0.12 + bobY),
-    [0.42, 0.28 + bobY], [0.58, 0.28 + bobY],  // shoulders
-    [lElbX, lElbY + bobY], [rElbX, rElbY + bobY],
-    [lWrX,  lWrY  + bobY], [rWrX,  rWrY  + bobY],
-    [0.44, 0.56 + bobY],  [0.56, 0.56 + bobY],  // hips
-    [lKnX, 0.72 + bobY],  [rKnX, 0.72 + bobY],
-    [lAnX, 0.88 + bobY],  [rAnX, 0.88 + bobY],
-  ] as [number,number][];
+/**
+ * 2. Wall Sit — SIDE VIEW, person facing right, back flat against wall (left edge).
+ * Classic 90° knee: thighs parallel to floor, shins vertical.
+ * This view makes the knee angle immediately obvious.
+ */
+function wallSit(t: number): [number,number][] {
+  // Wall is at x≈0.12. Person faces right.
+  // Near-camera side = left landmarks; far side = right landmarks (slight +x,+y offset).
+  const SIT: [number,number][] = [
+    [0.215, 0.280], // nose
+    [0.215, 0.265],
+    [0.225, 0.268], // right eye (far side, slightly right)
+    [0.201, 0.271], // left ear
+    [0.228, 0.274], // right ear
+    [0.175, 0.420], // left shoulder (against wall)
+    [0.200, 0.435], // right shoulder (depth offset)
+    [0.380, 0.440], // left elbow (arm resting on thigh)
+    [0.405, 0.455],
+    [0.460, 0.448], // left wrist (on knee)
+    [0.485, 0.463],
+    [0.175, 0.630], // left hip (back against wall, low)
+    [0.200, 0.645], // right hip
+    [0.490, 0.638], // left knee (thigh is horizontal → knee far from hip in x)
+    [0.515, 0.653], // right knee
+    [0.490, 0.876], // left ankle (shin vertical → ankle directly below knee)
+    [0.515, 0.876], // right ankle
+  ];
+  // Subtle quad tremor at 3.5 Hz
+  const tremor = 0.005 * Math.sin(2 * Math.PI * 3.5 * t);
+  const pts = addMotion(SIT, t, 0.0022, 0.15);
+  pts[13][1] += tremor;
+  pts[14][1] += tremor;
+  return pts;
 }
 
-/** 2. Wall Sit — deep static squat, slight quad tremor */
-function wallSit(t: number): [number, number][] {
-  const tremor = 0.006 * osc(t, 4.0); // 4 Hz trembling
-  return [
-    ...head(0.5, 0.30),
-    [0.42, 0.44], [0.58, 0.44],              // shoulders (lower)
-    [0.38, 0.52], [0.62, 0.52],              // elbows on thighs
-    [0.40, 0.62], [0.60, 0.62],              // wrists on knees
-    [0.42, 0.60], [0.58, 0.60],              // hips (low — at knee height)
-    [0.38, 0.60 + tremor], [0.62, 0.60 + tremor], // knees bent forward
-    [0.38, 0.85], [0.62, 0.85],              // ankles below knees
-  ] as [number,number][];
+/** 3. Push-up — horizontal, elbow flex/extend (Zengin: 0.55 Hz) */
+function pushUp(t: number): [number,number][] {
+  // Side view: head left, feet right; body horizontal ~y=0.45
+  // "Up" = arms extended (elbow ~150°), "Down" = chest near floor (elbow ~70°)
+  const UP: [number,number][] = [
+    [0.130, 0.440], // nose
+    [0.130, 0.424],
+    [0.130, 0.456],
+    [0.116, 0.430],
+    [0.116, 0.450],
+    [0.240, 0.395], // left shoulder
+    [0.240, 0.470], // right shoulder (depth-offset)
+    [0.215, 0.360], // left elbow — arms extended upward
+    [0.215, 0.435],
+    [0.190, 0.355], // left wrist (on floor)
+    [0.190, 0.430],
+    [0.590, 0.408], // left hip
+    [0.590, 0.462],
+    [0.720, 0.412], // left knee
+    [0.720, 0.466],
+    [0.850, 0.418], // left ankle
+    [0.850, 0.472],
+  ];
+  const DOWN: [number,number][] = [
+    [0.130, 0.495],
+    [0.130, 0.479],
+    [0.130, 0.511],
+    [0.116, 0.485],
+    [0.116, 0.505],
+    [0.240, 0.458], // shoulders drop
+    [0.240, 0.532],
+    [0.225, 0.432], // elbows bent ~70°
+    [0.225, 0.506],
+    [0.190, 0.355], // wrists fixed on floor
+    [0.190, 0.430],
+    [0.590, 0.408],
+    [0.590, 0.462],
+    [0.720, 0.412],
+    [0.720, 0.466],
+    [0.850, 0.418],
+    [0.850, 0.472],
+  ];
+  const u = repPhase(t, 0.55);
+  return addMotion(blend(UP, DOWN, u), t, 0.003, 0.3);
 }
 
-/** 3. Push-up — horizontal body, elbow flex/extend (side view) */
-function pushUp(t: number): [number, number][] {
-  const u = pulse(t, 0.55);
-  // Body horizontal: head left, feet right
-  // "Down" (u=1): elbows bent, chest near floor
-  // "Up" (u=0): arms extended
-  const armExtendY = lerp(0.44, 0.54, u); // chest height
-  const elbY = lerp(0.38, 0.48, u);
-  return [
-    ...head(0.14, 0.48),
-    [0.26, 0.42], [0.26, 0.52],              // shoulders L/R (depth offset)
-    [0.24, elbY], [0.24, armExtendY],        // elbows
-    [0.18, elbY + 0.02], [0.18, armExtendY + 0.02], // wrists
-    [0.60, 0.42], [0.60, 0.52],              // hips
-    [0.73, 0.42], [0.73, 0.52],              // knees
-    [0.86, 0.43], [0.86, 0.53],              // ankles
-  ] as [number,number][];
+/** 4. Ab Crunch — supine, knees up, torso curls */
+function abCrunch(t: number): [number,number][] {
+  const REST: [number,number][] = [
+    [0.100, 0.480],
+    [0.100, 0.464],
+    [0.100, 0.496],
+    [0.086, 0.470],
+    [0.086, 0.490],
+    [0.220, 0.480],
+    [0.220, 0.530],
+    [0.310, 0.475],
+    [0.310, 0.525],
+    [0.360, 0.470],
+    [0.360, 0.520],
+    [0.540, 0.480],
+    [0.540, 0.530],
+    [0.545, 0.380],
+    [0.545, 0.430],
+    [0.540, 0.290],
+    [0.540, 0.340],
+  ];
+  const CRUNCH: [number,number][] = [
+    [0.220, 0.450], // head rises toward knees
+    [0.220, 0.434],
+    [0.220, 0.466],
+    [0.206, 0.440],
+    [0.206, 0.460],
+    [0.280, 0.445],
+    [0.280, 0.495],
+    [0.340, 0.440],
+    [0.340, 0.490],
+    [0.380, 0.435],
+    [0.380, 0.485],
+    [0.540, 0.480],
+    [0.540, 0.530],
+    [0.545, 0.380],
+    [0.545, 0.430],
+    [0.540, 0.290],
+    [0.540, 0.340],
+  ];
+  const u = repPhase(t, 0.6);
+  return addMotion(blend(REST, CRUNCH, u), t, 0.0025, 0.2);
 }
 
-/** 4. Ab Crunch — lying, knees up, torso curls toward knees */
-function abCrunch(t: number): [number, number][] {
-  const u = pulse(t, 0.6);
-  // Head rises (x decreases toward knees) during crunch
-  const hx = lerp(0.12, 0.22, u);
-  const shoulderY = lerp(0.48, 0.44, u);
-  return [
-    ...head(hx, 0.45),
-    [0.22, shoulderY], [0.22, 0.52],         // shoulders
-    [0.30, shoulderY + 0.04], [0.30, 0.56],  // elbows (behind head)
-    [0.34, shoulderY + 0.03], [0.34, 0.57],  // wrists (hands behind head)
-    [0.55, 0.48], [0.55, 0.52],              // hips
-    [0.58, 0.36], [0.58, 0.40],              // knees bent up
-    [0.60, 0.30], [0.60, 0.34],              // ankles (feet raised)
-  ] as [number,number][];
-}
+/** 5. Step-up — alternating knee lifts with arm drive */
+function stepUp(t: number): [number,number][] {
+  // Bilateral at 0.8 Hz, offset half-cycle per side
+  const liftL = Math.max(0, Math.sin(2 * Math.PI * 0.8 * t));
+  const liftR = Math.max(0, Math.sin(2 * Math.PI * 0.8 * t + Math.PI));
+  const uL = smoothstep(liftL);
+  const uR = smoothstep(liftR);
 
-/** 5. Step-up — upright, alternating deliberate knee lifts */
-function stepUp(t: number): [number, number][] {
-  // Alternate legs at 0.8 Hz, arms swing opposite
-  const leftUp  = Math.max(0, osc(t, 0.8, 0));
-  const rightUp = Math.max(0, osc(t, 0.8, Math.PI));
-  const lKnY = lerp(0.72, 0.38, leftUp);
-  const rKnY = lerp(0.72, 0.38, rightUp);
-  const lAnY = lerp(0.88, 0.50, leftUp);
-  const rAnY = lerp(0.88, 0.50, rightUp);
+  const pts = STAND.map(([x, y]) => [x, y] as [number, number]);
+  // Left leg: knee comes up to hip height
+  pts[13] = [0.422, lerp(0.690, 0.420, uL)];
+  pts[15] = [0.414, lerp(0.878, 0.540, uL)];
+  // Right leg
+  pts[14] = [0.578, lerp(0.690, 0.420, uR)];
+  pts[16] = [0.586, lerp(0.878, 0.540, uR)];
   // Arms swing counter to legs
-  const lElbX = lerp(0.37, 0.32, rightUp), lElbY = lerp(0.42, 0.35, rightUp);
-  const rElbX = lerp(0.63, 0.68, leftUp),  rElbY = lerp(0.42, 0.35, leftUp);
-  return [
-    ...head(0.5, 0.12),
-    [0.42, 0.28], [0.58, 0.28],
-    [lElbX, lElbY], [rElbX, rElbY],
-    [lerp(0.33, 0.28, rightUp), lerp(0.52, 0.42, rightUp)],
-    [lerp(0.67, 0.72, leftUp),  lerp(0.52, 0.42, leftUp)],
-    [0.44, 0.56], [0.56, 0.56],
-    [0.44, lKnY], [0.56, rKnY],
-    [0.44, lAnY], [0.56, rAnY],
-  ] as [number,number][];
+  pts[7]  = [0.357, lerp(0.375, 0.275, uR)]; // left elbow rises with right leg
+  pts[9]  = [0.344, lerp(0.505, 0.200, uR)];
+  pts[8]  = [0.643, lerp(0.375, 0.275, uL)];
+  pts[10] = [0.656, lerp(0.505, 0.200, uL)];
+  return addMotion(pts, t, 0.003, 0.8);
 }
 
-/** 6. Squat — deep knee/hip bend, arms extended forward */
-function squat(t: number): [number, number][] {
-  const u = pulse(t, 0.6);
-  // Body drops: nose goes from 0.12 to 0.34, hips drop to knee level
-  const bodyDrop = lerp(0, 0.20, u);
-  const kneeSpread = lerp(0, 0.06, u);
-  const armRaise = lerp(0, 0.12, u);
-  return [
-    ...head(0.5, 0.12 + bodyDrop),
-    [0.42, 0.28 + bodyDrop], [0.58, 0.28 + bodyDrop],
-    [0.37, 0.40 + bodyDrop - armRaise], [0.63, 0.40 + bodyDrop - armRaise], // elbows raise
-    [0.34, 0.38 + bodyDrop - armRaise], [0.66, 0.38 + bodyDrop - armRaise], // wrists forward
-    [0.44 - kneeSpread, 0.56 + bodyDrop], [0.56 + kneeSpread, 0.56 + bodyDrop], // hips drop
-    [0.40 - kneeSpread, 0.72 + bodyDrop * 0.4], [0.60 + kneeSpread, 0.72 + bodyDrop * 0.4],
-    [0.40 - kneeSpread, 0.88], [0.60 + kneeSpread, 0.88],
-  ] as [number,number][];
+/**
+ * 6. Squat — deep knee/hip bend, arms extended for balance (Zengin: 0.6 Hz)
+ * Zengin: hip angle 165° (stand) → 85° (bottom). Good squat ≤ 90° knee depth.
+ */
+function squat(t: number): [number,number][] {
+  // Deep squat: body drops ~0.18, knees spread, arms come forward
+  const BOTTOM: [number,number][] = [
+    [0.500, 0.270], // nose (body drops ~0.18)
+    [0.473, 0.257],
+    [0.527, 0.257],
+    [0.447, 0.263],
+    [0.553, 0.263],
+    [0.406, 0.415], // shoulders drop
+    [0.594, 0.415],
+    [0.344, 0.375], // elbows extend forward for balance
+    [0.656, 0.375],
+    [0.305, 0.340], // wrists forward (arms extended ~horizontal)
+    [0.695, 0.340],
+    [0.410, 0.685], // hips drop (close to knee height)
+    [0.590, 0.685],
+    [0.358, 0.720], // knees spread wide, travel forward
+    [0.642, 0.720],
+    [0.414, 0.878], // ankles fixed
+    [0.586, 0.878],
+  ];
+  const u = repPhase(t, 0.6);
+  return addMotion(blend(STAND, BOTTOM, u), t, 0.003, 0.8);
 }
 
-/** 7. Tricep Dip — seated, hips lower/raise, elbows bend behind */
-function tricepDip(t: number): [number, number][] {
-  const u = pulse(t, 0.55);
-  // Hips lower (u=1), arms bend more
-  const hipY  = lerp(0.62, 0.74, u);
-  const elbY  = lerp(0.46, 0.56, u);
-  return [
-    ...head(0.5, 0.30),
-    [0.42, 0.44], [0.58, 0.44],            // shoulders
-    [0.34, elbY], [0.66, elbY],            // elbows behind/below hips
-    [0.30, elbY + 0.08], [0.70, elbY + 0.08], // wrists (hands on surface)
-    [0.44, hipY], [0.56, hipY],            // hips (floating, dipping)
-    [0.42, 0.74], [0.58, 0.74],            // knees (bent at ~90°)
-    [0.42, 0.88], [0.58, 0.88],            // ankles
-  ] as [number,number][];
+/**
+ * 7. Tricep Dip — SIDE VIEW, person facing right.
+ * Hands on bench behind them (left/back, low x), body hanging forward,
+ * knees extended forward. Elbows bend to ~90° on the down phase.
+ * This is the standard coaching image orientation.
+ */
+function tricepDip(t: number): [number,number][] {
+  // Bench surface is at y≈0.520. Hands fixed on bench behind body.
+  // "HIGH" = arms extended (~160°), hips at seat height.
+  // "LOW"  = elbows bent (~90°), hips dropped below bench.
+  const HIGH: [number,number][] = [
+    [0.320, 0.278], // nose
+    [0.320, 0.263],
+    [0.330, 0.266],
+    [0.306, 0.269],
+    [0.333, 0.272],
+    [0.290, 0.415], // left shoulder (near camera)
+    [0.315, 0.430], // right shoulder (depth offset)
+    [0.195, 0.428], // left elbow (arm behind, slightly bent)
+    [0.220, 0.443],
+    [0.155, 0.518], // left wrist — fixed on bench surface
+    [0.180, 0.518],
+    [0.460, 0.520], // left hip — at bench height
+    [0.485, 0.535],
+    [0.600, 0.518], // left knee (legs roughly horizontal)
+    [0.625, 0.533],
+    [0.720, 0.522], // left ankle
+    [0.745, 0.537],
+  ];
+  const LOW: [number,number][] = [
+    [0.320, 0.310], // nose (body drops)
+    [0.320, 0.295],
+    [0.330, 0.298],
+    [0.306, 0.301],
+    [0.333, 0.304],
+    [0.295, 0.448], // shoulders drop
+    [0.320, 0.463],
+    [0.210, 0.500], // elbows bent to ~90°
+    [0.235, 0.515],
+    [0.155, 0.518], // wrists fixed on bench
+    [0.180, 0.518],
+    [0.460, 0.630], // hips dipped well below bench
+    [0.485, 0.645],
+    [0.600, 0.540], // knees stay roughly level
+    [0.625, 0.555],
+    [0.720, 0.530],
+    [0.745, 0.545],
+  ];
+  const u = repPhase(t, 0.55);
+  return addMotion(blend(HIGH, LOW, u), t, 0.003, 0.2);
 }
 
-/** 8. Plank — horizontal static hold, tiny core wobble */
-function plank(t: number): [number, number][] {
-  const wobble = 0.008 * osc(t, 0.3); // very slow wobble
-  return [
-    ...head(0.14, 0.46),
-    [0.26, 0.42], [0.26, 0.50],
-    [0.22, 0.40 + wobble], [0.22, 0.48 + wobble],
-    [0.18, 0.42 + wobble], [0.18, 0.50 + wobble],
-    [0.60, 0.42 + wobble], [0.60, 0.50 + wobble],
-    [0.73, 0.43 + wobble], [0.73, 0.51 + wobble],
-    [0.86, 0.44], [0.86, 0.52],
-  ] as [number,number][];
+/** 8. Plank — horizontal static hold with slow core wobble */
+function plank(t: number): [number,number][] {
+  const HOLD: [number,number][] = [
+    [0.130, 0.448],
+    [0.130, 0.432],
+    [0.130, 0.464],
+    [0.116, 0.438],
+    [0.116, 0.458],
+    [0.235, 0.402], // shoulders
+    [0.235, 0.494],
+    [0.192, 0.400], // elbows (forearm plank)
+    [0.192, 0.492],
+    [0.175, 0.402], // wrists on floor
+    [0.175, 0.494],
+    [0.600, 0.420], // hips level with shoulders
+    [0.600, 0.478],
+    [0.715, 0.424],
+    [0.715, 0.476],
+    [0.855, 0.428],
+    [0.855, 0.472],
+  ];
+  // Slow hip sway (0.3 Hz), sub-cm amplitude
+  const sway = 0.007 * Math.sin(2 * Math.PI * 0.3 * t);
+  return addMotion(
+    HOLD.map(([x, y], i) => [x, i >= 11 ? y + sway : y] as [number,number]),
+    t, 0.0018, 0.1
+  );
 }
 
-/** 9. High Knees — rapid alternating knee lifts with arm drive */
-function highKnees(t: number): [number, number][] {
-  const leftUp  = Math.max(0, osc(t, 2.4, 0));
-  const rightUp = Math.max(0, osc(t, 2.4, Math.PI));
-  const lKnY = lerp(0.72, 0.35, leftUp);
-  const rKnY = lerp(0.72, 0.35, rightUp);
-  const lAnY = lerp(0.88, 0.46, leftUp);
-  const rAnY = lerp(0.88, 0.46, rightUp);
-  // Arms pump high opposite to legs
-  const lElbY = lerp(0.42, 0.28, rightUp);
-  const rElbY = lerp(0.42, 0.28, leftUp);
-  const lWrY  = lerp(0.52, 0.20, rightUp);
-  const rWrY  = lerp(0.52, 0.20, leftUp);
-  return [
-    ...head(0.5, 0.11),
-    [0.42, 0.27], [0.58, 0.27],
-    [0.37, lElbY], [0.63, rElbY],
-    [0.35, lWrY],  [0.65, rWrY],
-    [0.44, 0.54],  [0.56, 0.54],
-    [0.44, lKnY],  [0.56, rKnY],
-    [0.44, lAnY],  [0.56, rAnY],
-  ] as [number,number][];
+/**
+ * 9. High Knees — rapid bilateral knee drive (Zengin: 2.4 Hz bilateral)
+ * Hip flexion angle falls below 100° (knee-to-shoulder) at peak lift.
+ */
+function highKnees(t: number): [number,number][] {
+  const liftL = Math.max(0, Math.sin(2 * Math.PI * 2.4 * t));
+  const liftR = Math.max(0, Math.sin(2 * Math.PI * 2.4 * t + Math.PI));
+  const uL = smoothstep(liftL);
+  const uR = smoothstep(liftR);
+
+  const pts = STAND.map(([x, y]) => [x, y] as [number, number]);
+  // Left knee drives up to hip height
+  pts[13] = [lerp(0.422, 0.435, uL), lerp(0.690, 0.390, uL)];
+  pts[15] = [lerp(0.414, 0.440, uL), lerp(0.878, 0.510, uL)];
+  // Right knee
+  pts[14] = [lerp(0.578, 0.565, uR), lerp(0.690, 0.390, uR)];
+  pts[16] = [lerp(0.586, 0.560, uR), lerp(0.878, 0.510, uR)];
+  // Arms pump counter to legs — aggressive drive
+  pts[7]  = [lerp(0.357, 0.326, uR), lerp(0.375, 0.255, uR)];
+  pts[9]  = [lerp(0.344, 0.318, uR), lerp(0.505, 0.185, uR)];
+  pts[8]  = [lerp(0.643, 0.674, uL), lerp(0.375, 0.255, uL)];
+  pts[10] = [lerp(0.656, 0.682, uL), lerp(0.505, 0.185, uL)];
+  return addMotion(pts, t, 0.004, 1.0);
 }
 
-/** 10. Lunge — alternating forward lunge, deep front knee bend */
-function lunge(t: number): [number, number][] {
-  // Alternate sides every ~1.5s
-  const side  = Math.sin(2 * Math.PI * t * 0.35) > 0 ? 1 : -1; // 1=left forward, -1=right forward
-  const depth = pulse(t, 0.7);
-  // Forward leg: knee deep forward, back leg extended behind
-  const fwdKnX = side > 0 ? 0.36 : 0.64, bkKnX = side > 0 ? 0.58 : 0.42;
-  const fwdAnX = side > 0 ? 0.32 : 0.68, bkAnX = side > 0 ? 0.56 : 0.44;
-  const fwdKnY = lerp(0.72, 0.68, depth);
-  const bkKnY  = lerp(0.72, 0.80, depth);
-  const bodyDrop = lerp(0, 0.08, depth);
-  return [
-    ...head(0.5, 0.12 + bodyDrop),
-    [0.42, 0.28 + bodyDrop], [0.58, 0.28 + bodyDrop],
-    [0.37, 0.42 + bodyDrop], [0.63, 0.42 + bodyDrop],
-    [0.33, 0.52 + bodyDrop], [0.67, 0.52 + bodyDrop],
-    [0.44, 0.55 + bodyDrop], [0.56, 0.55 + bodyDrop],
-    [fwdKnX, fwdKnY + bodyDrop], [bkKnX, bkKnY + bodyDrop],
-    [fwdAnX, 0.86],              [bkAnX,  0.82],
-  ] as [number,number][];
-}
+/**
+ * 10. Lunge — alternating forward stride, front knee at 90° (Zengin: 0.7 Hz)
+ * Zengin: front knee angle left_hip→left_knee→left_ankle drops to ≤100°.
+ */
+function lunge(t: number): [number,number][] {
+  // Alternate sides every ~1.4s
+  const sidePhase = (t * 0.35) % 1; // 0.35 Hz side switch
+  const isLeft = sidePhase < 0.5;
+  const stepDepth = repPhase(t, 0.7);
 
-/** 11. Push-up + Rotation — push-up then side twist with one arm up */
-function pushUpRotation(t: number): [number, number][] {
-  const cycle   = (t * 0.35) % 1; // full cycle: push-up → rotate → push-up
-  const isPush  = cycle < 0.5;
-  const phase   = isPush ? cycle * 2 : (cycle - 0.5) * 2;
-  const u = (1 - Math.cos(phase * Math.PI)) / 2;
-  if (isPush) {
-    // Push-up phase
-    const elbY = lerp(0.38, 0.48, u);
-    return [
-      ...head(0.14, 0.48),
-      [0.26, 0.42], [0.26, 0.52],
-      [0.24, elbY], [0.24, elbY + 0.08],
-      [0.18, elbY + 0.02], [0.18, elbY + 0.10],
-      [0.60, 0.42], [0.60, 0.52],
-      [0.73, 0.42], [0.73, 0.52],
-      [0.86, 0.43], [0.86, 0.53],
-    ] as [number,number][];
+  const pts = STAND.map(([x, y]) => [x, y] as [number, number]);
+  const drop = lerp(0, 0.12, stepDepth); // body lowers on descent
+
+  // Whole-body drop
+  for (let i = 0; i < 12; i++) pts[i][1] += drop;
+
+  if (isLeft) {
+    // Left leg steps forward: knee spreads left/forward, ankle forward
+    pts[13] = [lerp(0.422, 0.350, stepDepth), lerp(0.690, 0.705, stepDepth) + drop];
+    pts[15] = [lerp(0.414, 0.290, stepDepth), 0.878];
+    // Right leg extends back
+    pts[14] = [lerp(0.578, 0.600, stepDepth), lerp(0.690, 0.760, stepDepth) + drop];
+    pts[16] = [lerp(0.586, 0.610, stepDepth), 0.878];
   } else {
-    // Rotation phase: rise to side plank, one arm twists up
-    const armUpY = lerp(0.38, 0.14, u);
-    const armUpX = lerp(0.24, 0.26, u);
-    return [
-      ...head(0.14, 0.46),
-      [0.26, 0.42], [0.26, 0.50],
-      [armUpX, armUpY], [0.26, 0.52],     // left arm rises
-      [armUpX - 0.04, armUpY - 0.06], [0.22, 0.52], // left wrist up
-      [0.60, 0.44], [0.60, 0.50],
-      [0.73, 0.44], [0.73, 0.50],
-      [0.86, 0.44], [0.86, 0.52],
-    ] as [number,number][];
+    // Mirror
+    pts[14] = [lerp(0.578, 0.650, stepDepth), lerp(0.690, 0.705, stepDepth) + drop];
+    pts[16] = [lerp(0.586, 0.710, stepDepth), 0.878];
+    pts[13] = [lerp(0.422, 0.400, stepDepth), lerp(0.690, 0.760, stepDepth) + drop];
+    pts[15] = [lerp(0.414, 0.390, stepDepth), 0.878];
+  }
+  return addMotion(pts, t, 0.003, 0.7);
+}
+
+/** 11. Push-up + Rotation — push-up then T-rotation */
+function pushUpRotation(t: number): [number,number][] {
+  const cycle = (t * 0.35) % 1;
+  const isPush = cycle < 0.5;
+  const phase = isPush ? (cycle / 0.5) : ((cycle - 0.5) / 0.5);
+  const u = smoothstep(phase < 0.5 ? phase * 2 : (1 - phase) * 2);
+
+  if (isPush) {
+    // Reuse pushUp down phase
+    const UP: [number,number][] = [
+      [0.130, 0.440],[0.130, 0.424],[0.130, 0.456],[0.116, 0.430],[0.116, 0.450],
+      [0.240, 0.395],[0.240, 0.470],[0.215, 0.360],[0.215, 0.435],
+      [0.190, 0.355],[0.190, 0.430],
+      [0.590, 0.408],[0.590, 0.462],[0.720, 0.412],[0.720, 0.466],[0.850, 0.418],[0.850, 0.472],
+    ];
+    const DOWN: [number,number][] = [
+      [0.130, 0.495],[0.130, 0.479],[0.130, 0.511],[0.116, 0.485],[0.116, 0.505],
+      [0.240, 0.458],[0.240, 0.532],[0.225, 0.432],[0.225, 0.506],
+      [0.190, 0.355],[0.190, 0.430],
+      [0.590, 0.408],[0.590, 0.462],[0.720, 0.412],[0.720, 0.466],[0.850, 0.418],[0.850, 0.472],
+    ];
+    return addMotion(blend(UP, DOWN, u), t, 0.003, 0.3);
+  } else {
+    // Rotation: rise to side-plank, left arm sweeps up
+    const MID: [number,number][] = [
+      [0.130, 0.440],[0.130, 0.424],[0.130, 0.456],[0.116, 0.430],[0.116, 0.450],
+      [0.240, 0.395],[0.240, 0.470],[0.215, 0.360],[0.215, 0.435],
+      [0.190, 0.355],[0.190, 0.430],
+      [0.590, 0.408],[0.590, 0.462],[0.720, 0.412],[0.720, 0.466],[0.850, 0.418],[0.850, 0.472],
+    ];
+    const ROT: [number,number][] = [
+      [0.130, 0.445],[0.130, 0.429],[0.130, 0.461],[0.116, 0.435],[0.116, 0.455],
+      [0.240, 0.400],[0.265, 0.475],[0.220, 0.290],[0.215, 0.445], // left arm sweeps up
+      [0.215, 0.210],[0.190, 0.438], // left wrist high
+      [0.590, 0.415],[0.590, 0.468],[0.720, 0.418],[0.720, 0.470],[0.850, 0.422],[0.850, 0.474],
+    ];
+    return addMotion(blend(MID, ROT, u), t, 0.003, 0.3);
   }
 }
 
-/** 12. Side Plank — body diagonal, one arm raised, slight balance wobble */
-function sidePlank(t: number): [number, number][] {
-  const wobble = 0.01 * osc(t, 0.5);
-  // Body diagonal: head left-high, feet right-low
-  // Right arm extended to floor; left arm raised
-  return [
-    ...head(0.14, 0.36 + wobble),
-    [0.24, 0.42 + wobble], [0.28, 0.50 + wobble], // shoulders (diagonal)
-    [0.22, 0.30 + wobble], [0.30, 0.56 + wobble], // elbows: L up, R to floor
-    [0.20, 0.22 + wobble], [0.28, 0.62 + wobble], // wrists: L raised, R on floor
-    [0.50, 0.54 + wobble], [0.54, 0.60 + wobble], // hips
-    [0.64, 0.62 + wobble], [0.68, 0.66 + wobble], // knees
-    [0.78, 0.68 + wobble], [0.82, 0.72 + wobble], // ankles
-  ] as [number,number][];
+/** 12. Side Plank — diagonal body, one arm raised, slow balance wobble */
+function sidePlank(t: number): [number,number][] {
+  const HOLD: [number,number][] = [
+    [0.145, 0.360], // nose
+    [0.145, 0.344],
+    [0.145, 0.376],
+    [0.131, 0.350],
+    [0.131, 0.370],
+    [0.240, 0.428], // left shoulder (lower, supporting)
+    [0.285, 0.500], // right shoulder (body diagonal)
+    [0.220, 0.320], // left elbow — left arm reaches up
+    [0.295, 0.556], // right elbow on floor
+    [0.205, 0.230], // left wrist high
+    [0.290, 0.600], // right wrist on floor
+    [0.495, 0.548], // left hip (body mid-point)
+    [0.540, 0.590], // right hip
+    [0.635, 0.630], // left knee
+    [0.670, 0.660], // right knee
+    [0.780, 0.688], // left ankle
+    [0.815, 0.710], // right ankle
+  ];
+  const wobble = 0.010 * Math.sin(2 * Math.PI * 0.45 * t);
+  return addMotion(
+    HOLD.map(([x, y]) => [x, y + wobble] as [number, number]),
+    t, 0.0020, 0.1
+  );
 }
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
@@ -326,14 +559,58 @@ const GENERATORS: Record<ExerciseId, (t: number) => [number, number][]> = {
   "side-plank":       sidePlank,
 };
 
+// ─── Real-data registry (populated by prefetchRealData) ──────────────────────
+//
+// Module-level cache keyed by ExerciseId. When populated, generateMockFrame
+// uses the real frames instead of the procedural generator — no API changes needed.
+
+interface DatasetFile {
+  frames: PoseFrame[];
+  fps: number;
+  loop: boolean;
+}
+
+const _realGenerators = new Map<ExerciseId, (wallTimeSec: number) => PoseFrame>();
+
+/**
+ * Pre-fetch a real dataset for an exercise from /public/data/<exercise>.json.
+ * Must be called client-side (e.g., from a React useEffect).
+ * After the fetch, generateMockFrame automatically uses the real data.
+ *
+ * Available datasets: "squat"
+ */
+export async function prefetchRealData(exercise: ExerciseId): Promise<void> {
+  if (_realGenerators.has(exercise)) return; // already loaded
+  try {
+    const res = await fetch(`/data/${exercise}.json`);
+    if (!res.ok) return; // no file for this exercise — stay procedural
+    const data: DatasetFile = await res.json();
+    const replay = createReplay(data.frames, { fps: data.fps ?? 10, loop: data.loop ?? true });
+    _realGenerators.set(exercise, replay);
+  } catch {
+    // Silently fall back to procedural — offline or file missing
+  }
+}
+
+// ─── Frame generator ──────────────────────────────────────────────────────────
+
 export function generateMockFrame(exercise: ExerciseId = "jumping-jacks", t?: number): PoseFrame {
   const now = t ?? Date.now() / 1000;
+
+  // Use real data if prefetched
+  const real = _realGenerators.get(exercise);
+  if (real) return real(now);
+
+  // Procedural fallback
   const positions = GENERATORS[exercise](now);
 
+  // Confidence scores: face kps slightly higher; simulate slow drift + tiny noise
   const keypoints = COCO_KEYPOINT_NAMES.map((name, i) => {
     const [x, y] = positions[i] ?? [0.5, 0.5];
-    const baseScore = i < 5 ? 0.88 : i < 11 ? 0.83 : 0.76;
-    const score = Math.min(1, Math.max(0.4, baseScore + 0.07 * Math.sin(now * 0.4 + i)));
+    const base = i < 5 ? 0.89 : i < 11 ? 0.84 : 0.78;
+    const score = Math.min(0.99, Math.max(0.42,
+      base + 0.04 * Math.sin(now * 0.31 + i * 0.9)
+    ));
     return { name, x, y, score };
   });
 

@@ -18,14 +18,55 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Optional
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+try:
+    from websockets.asyncio.server import ServerConnection as WsConn
+except ImportError:
+    from websockets.server import WebSocketServerProtocol as WsConn  # type: ignore[attr-defined]
 
 from config import Config
+
+# ---------------------------------------------------------------------------
+# Shared thumbnail state (written by PoseProducer, read by SnapshotHandler)
+# ---------------------------------------------------------------------------
+
+_thumb_lock = threading.Lock()
+_thumb_jpeg: bytes = b""
+
+
+class SnapshotHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler that serves the latest camera thumbnail as JPEG."""
+
+    def do_GET(self) -> None:
+        if self.path != "/snapshot":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        with _thumb_lock:
+            data = _thumb_jpeg
+
+        if data:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_response(503)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        pass  # suppress default HTTP access logs
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -254,6 +295,66 @@ def _build_mqtt_client(cfg: Config):
 
 
 # ---------------------------------------------------------------------------
+# Camera watchdog (runs on a daemon thread)
+# ---------------------------------------------------------------------------
+
+class CameraWatchdog:
+    """Kills the process if no frame is produced within *timeout* seconds.
+
+    The picamera2 library has a known V4L2 polling deadlock where
+    ``capture_metadata()`` blocks forever after long continuous runs.
+    A hard SIGTERM + systemd restart is the only reliable recovery.
+
+    Usage::
+
+        watchdog = CameraWatchdog(timeout=30)
+        # ... set up camera ...
+        watchdog.start()          # only after successful camera init
+        while True:
+            metadata = picam2.capture_metadata()
+            watchdog.ping()       # reset the timer on every live frame
+
+    Args:
+        timeout: Seconds without a frame before the process is killed.
+    """
+
+    def __init__(self, timeout: float = 30) -> None:
+        self._timeout = timeout
+        self._last_frame = time.monotonic()
+        self._lock = threading.Lock()
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="camera-watchdog")
+
+    def start(self) -> None:
+        """Start the watchdog timer. Call AFTER the camera is confirmed working."""
+        with self._lock:
+            self._last_frame = time.monotonic()
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Disable the watchdog (call on clean shutdown)."""
+        self._stop = True
+
+    def ping(self) -> None:
+        """Reset the inactivity timer. Call after each successfully captured frame."""
+        with self._lock:
+            self._last_frame = time.monotonic()
+
+    def _run(self) -> None:
+        while not self._stop:
+            time.sleep(5)
+            with self._lock:
+                elapsed = time.monotonic() - self._last_frame
+            if elapsed > self._timeout:
+                log.error(
+                    "Watchdog: no frame produced for %.0f s — sending SIGTERM for systemd restart",
+                    elapsed,
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+
+# ---------------------------------------------------------------------------
 # Frame producer (sync, runs in executor)
 # ---------------------------------------------------------------------------
 
@@ -281,15 +382,48 @@ class PoseProducer:
 
     def run(self) -> None:
         """Blocking main loop — call from a thread."""
+        global _thumb_jpeg
+
         picam2, imx500 = _setup_camera(self.cfg)
         is_higherhrnet = "higherhrnet" in imx500.network_name.lower() if hasattr(imx500, "network_name") else True
 
         log.info("Pose producer started (model: %s)", getattr(imx500, "network_name", "unknown"))
 
+        # Start the watchdog now — camera is confirmed live.
+        watchdog = CameraWatchdog(timeout=30)
+        watchdog.start()
+
+        import cv2
+        frame_count = 0
+        # Capture thumbnail every ~3 s (45 frames at 15 fps)
+        THUMB_INTERVAL = max(1, self.cfg.FRAMERATE * 3)
+
         try:
             while not self._stop:
-                metadata = picam2.capture_metadata()
+                try:
+                    metadata = picam2.capture_metadata()
+                except Exception as exc:
+                    log.warning("capture_metadata error: %s — retrying in 1 s", exc)
+                    time.sleep(1)
+                    continue
                 ts = time.time()
+
+                # Throttled thumbnail capture
+                frame_count += 1
+                if frame_count % THUMB_INTERVAL == 0:
+                    try:
+                        arr = picam2.capture_array("main")  # XBGR8888 (H, W, 4)
+                        small = cv2.resize(arr, (320, 240))
+                        # XBGR8888 on little-endian ARM is stored as [R,G,B,X] in memory,
+                        # so treat as RGBA and convert to BGR for imencode.
+                        bgr = cv2.cvtColor(small, cv2.COLOR_RGBA2BGR)
+                        _, jpeg = cv2.imencode(
+                            ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 55]
+                        )
+                        with _thumb_lock:
+                            _thumb_jpeg = jpeg.tobytes()
+                    except Exception as exc:
+                        log.debug("thumbnail error: %s", exc)
 
                 try:
                     outputs = imx500.get_outputs(metadata, add_batch=True)
@@ -305,6 +439,13 @@ class PoseProducer:
                 else:
                     keypoints = _parse_posenet_raw(outputs, self.cfg)
 
+                # Camera is alive — reset watchdog regardless of whether a
+                # person is detected. The watchdog only guards against the
+                # picamera2 V4L2 deadlock where capture_metadata() blocks
+                # forever; it should NOT restart just because nobody is
+                # standing in front of the camera.
+                watchdog.ping()
+
                 if not keypoints:
                     continue
 
@@ -314,6 +455,7 @@ class PoseProducer:
                     self._put(payload), self.loop
                 )
         finally:
+            watchdog.stop()
             picam2.stop()
             log.info("Camera stopped")
 
@@ -338,10 +480,10 @@ class PoseServer:
     def __init__(self, cfg: Config, mqtt_client: Any = None) -> None:
         self.cfg = cfg
         self.mqtt_client = mqtt_client
-        self._clients: set[WebSocketServerProtocol] = set()
+        self._clients: set[WsConn] = set()
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=4)
 
-    async def _handler(self, websocket: WebSocketServerProtocol) -> None:
+    async def _handler(self, websocket: WsConn) -> None:
         """Handle a new WebSocket connection.
 
         Args:
@@ -373,7 +515,7 @@ class PoseServer:
                 continue
 
             # Broadcast to all clients; remove any that have disconnected
-            dead: set[WebSocketServerProtocol] = set()
+            dead: set[WsConn] = set()
             for ws in list(self._clients):
                 try:
                     await ws.send(payload)
@@ -389,6 +531,14 @@ class PoseServer:
         loop = asyncio.get_running_loop()
         producer = PoseProducer(self.cfg, self._queue, loop)
 
+        # Start snapshot HTTP server on a daemon thread
+        snap_server = HTTPServer(("0.0.0.0", self.cfg.SNAPSHOT_PORT), SnapshotHandler)
+        snap_thread = threading.Thread(target=snap_server.serve_forever, daemon=True)
+        snap_thread.start()
+        log.info(
+            "Snapshot server on http://0.0.0.0:%d/snapshot", self.cfg.SNAPSHOT_PORT
+        )
+
         # Run blocking camera loop in a thread pool executor
         executor_future = loop.run_in_executor(None, producer.run)
 
@@ -396,7 +546,19 @@ class PoseServer:
 
         log.info("WebSocket server listening on ws://0.0.0.0:%d", self.cfg.WS_PORT)
         try:
-            async with websockets.serve(self._handler, "0.0.0.0", self.cfg.WS_PORT):
+            async with websockets.serve(
+                self._handler,
+                "0.0.0.0",
+                self.cfg.WS_PORT,
+                # Detect stale connections quickly (default 20 s is too slow).
+                ping_interval=5,    # send a ping every 5 s
+                ping_timeout=10,    # drop client if no pong within 10 s
+                # Disable per-message deflate: saves ~50 KB per connection on 512 MB RAM
+                # and avoids CPU overhead on the Pi Zero 2W.
+                compression=None,
+                # Pose frames are small JSON (~800 B); cap message size for safety.
+                max_size=64_000,
+            ):
                 await asyncio.gather(executor_future, broadcaster_task)
         except asyncio.CancelledError:
             pass
